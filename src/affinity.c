@@ -65,6 +65,7 @@ int affinity_core2node_lookup[MAX_NUM_THREADS];
 
 static int  affinity_numberOfDomains = 0;
 static AffinityDomain*  domains;
+static int affinity_initialized = 0;
 
 AffinityDomains affinityDomains;
 
@@ -156,29 +157,39 @@ affinity_init()
     int subCounter = 0;
     int offset = 0;
     int tmp;
+    if (affinity_initialized == 1)
+    {
+        return;
+    }
+    topology_init();
     int numberOfSocketDomains = cpuid_topology.numSockets;
+    DEBUG_PRINT(DEBUGLEV_DEVELOP, Affinity: Socket domains %d, numberOfSocketDomains);
+    numa_init();
     int numberOfNumaDomains = numa_info.numberOfNodes;
+    DEBUG_PRINT(DEBUGLEV_DEVELOP, Affinity: NUMA domains %d, numberOfNumaDomains);
     int numberOfProcessorsPerSocket =
         cpuid_topology.numCoresPerSocket * cpuid_topology.numThreadsPerCore;
+    DEBUG_PRINT(DEBUGLEV_DEVELOP, Affinity: CPUs per socket %d, numberOfProcessorsPerSocket);
     int numberOfCacheDomains;
 
     int numberOfCoresPerCache =
         cpuid_topology.cacheLevels[cpuid_topology.numCacheLevels-1].threads/
         cpuid_topology.numThreadsPerCore;
+    DEBUG_PRINT(DEBUGLEV_DEVELOP, Affinity: CPU cores per LLC %d, numberOfCoresPerCache);
 
     int numberOfProcessorsPerCache =
         cpuid_topology.cacheLevels[cpuid_topology.numCacheLevels-1].threads;
-    int numberOfCoresPerNUMA = 
-
+    DEBUG_PRINT(DEBUGLEV_DEVELOP, Affinity: CPUs per LLC %d, numberOfProcessorsPerCache);
     /* for the cache domain take only into account last level cache and assume
      * all sockets to be uniform. */
 
     /* determine how many last level shared caches exist per socket */
     numberOfCacheDomains = cpuid_topology.numSockets *
         (cpuid_topology.numCoresPerSocket/numberOfCoresPerCache);
-
+    DEBUG_PRINT(DEBUGLEV_DEVELOP, Affinity: Cache domains %d, numberOfCacheDomains);
     /* determine total number of domains */
     numberOfDomains += numberOfSocketDomains + numberOfCacheDomains + numberOfNumaDomains;
+    DEBUG_PRINT(DEBUGLEV_DEVELOP, Affinity: All domains %d, numberOfDomains);
     domains = (AffinityDomain*) malloc(numberOfDomains * sizeof(AffinityDomain));
     if (!domains)
     {
@@ -189,6 +200,7 @@ affinity_init()
     /* Node domain */
     domains[0].numberOfProcessors = cpuid_topology.activeHWThreads;
     domains[0].numberOfCores = cpuid_topology.numSockets * cpuid_topology.numCoresPerSocket;
+    DEBUG_PRINT(DEBUGLEV_DEVELOP, Affinity domain N: %d HW threads on %d cores, domains[0].numberOfProcessors, domains[0].numberOfCores);
     domains[0].tag = bformat("N");
     domains[0].processorList = (int*) malloc(cpuid_topology.numHWThreads*sizeof(int));
     if (!domains[0].processorList)
@@ -220,14 +232,14 @@ affinity_init()
 
     /* Socket domains */
     currentDomain = 1;
-
     for (int i=0; i < numberOfSocketDomains; i++ )
     {
         domains[currentDomain + i].numberOfProcessors = numberOfProcessorsPerSocket;
         domains[currentDomain + i].numberOfCores =  cpuid_topology.numCoresPerSocket;
         domains[currentDomain + i].tag = bformat("S%d", i);
+        DEBUG_PRINT(DEBUGLEV_DEVELOP, Affinity domain S%d: %d HW threads on %d cores, i, domains[currentDomain + i].numberOfProcessors, domains[currentDomain + i].numberOfCores);
         domains[currentDomain + i].processorList = (int*) malloc( domains[currentDomain + i].numberOfProcessors * sizeof(int));
-        if (!domains[currentDomain + i].processorList)   
+        if (!domains[currentDomain + i].processorList)
         {
             fprintf(stderr,"No more memory for %ld bytes for processor list of affinity domain %s\n",
                     domains[currentDomain + i].numberOfProcessors * sizeof(int),
@@ -238,6 +250,11 @@ affinity_init()
         tmp = treeFillNextEntries(cpuid_topology.topologyTree,
                                   domains[currentDomain + i].processorList,
                                   i, 0, domains[currentDomain + i].numberOfProcessors);
+        tmp = MIN(tmp, domains[currentDomain + i].numberOfProcessors);
+        for ( int j = 0; j < tmp; j++ )
+        {
+            affinity_core2node_lookup[domains[currentDomain + i].processorList[j]] = i;
+        }
         domains[currentDomain + i].numberOfProcessors = tmp;
     }
 
@@ -253,6 +270,7 @@ affinity_init()
             domains[currentDomain + subCounter].numberOfProcessors = numberOfProcessorsPerCache;
             domains[currentDomain + subCounter].numberOfCores =  numberOfCoresPerCache;
             domains[currentDomain + subCounter].tag = bformat("C%d", subCounter);
+            DEBUG_PRINT(DEBUGLEV_DEVELOP, Affinity domain C%d: %d HW threads on %d cores, subCounter, domains[currentDomain + subCounter].numberOfProcessors, domains[currentDomain + subCounter].numberOfCores);
             domains[currentDomain + subCounter].processorList = (int*) malloc(numberOfProcessorsPerCache*sizeof(int));
             if (!domains[currentDomain + subCounter].processorList)   
             {
@@ -286,6 +304,7 @@ affinity_init()
                 domains[currentDomain + subCounter].numberOfCores =
                                 numa_info.nodes[subCounter].numberOfProcessors/cpuid_topology.numThreadsPerCore;
                 domains[currentDomain + subCounter].tag = bformat("M%d", subCounter);
+                DEBUG_PRINT(DEBUGLEV_DEVELOP, Affinity domain M%d: %d HW threads on %d cores, subCounter, domains[currentDomain + subCounter].numberOfProcessors, domains[currentDomain + subCounter].numberOfCores);
                 domains[currentDomain + subCounter].processorList =
                                 (int*) malloc(numa_info.nodes[subCounter].numberOfProcessors*sizeof(int));
                 if (!domains[currentDomain + subCounter].processorList)
@@ -311,8 +330,9 @@ affinity_init()
         offset = 0;
         int NUMAthreads = numberOfProcessorsPerSocket * numberOfSocketDomains;
         domains[currentDomain + subCounter].numberOfProcessors = NUMAthreads;
-        domains[currentDomain + subCounter].numberOfCores =  numberOfProcessorsPerSocket;
+        domains[currentDomain + subCounter].numberOfCores =  NUMAthreads/cpuid_topology.numThreadsPerCore;
         domains[currentDomain + subCounter].tag = bformat("M%d", subCounter);
+        DEBUG_PRINT(DEBUGLEV_DEVELOP, Affinity domain M%d: %d HW threads on %d cores, subCounter, domains[currentDomain + subCounter].numberOfProcessors, domains[currentDomain + subCounter].numberOfCores);
         domains[currentDomain + subCounter].processorList = (int*) malloc(NUMAthreads*sizeof(int));
         if (!domains[currentDomain + subCounter].processorList)
         {
@@ -333,15 +353,6 @@ affinity_init()
         domains[currentDomain + subCounter].numberOfProcessors = tmp;
     }
 
-    /* This is redundant ;-). Create thread to node lookup */
-    for ( uint32_t i = 0; i < numa_info.numberOfNodes; i++ )
-    {
-        for ( int j = 0; j < numa_info.nodes[i].numberOfProcessors; j++ )
-        {
-            affinity_core2node_lookup[numa_info.nodes[i].processors[j]] = i;
-        }
-    }
-
     affinity_numberOfDomains = numberOfDomains;
     affinityDomains.numberOfAffinityDomains = numberOfDomains;
     affinityDomains.numberOfSocketDomains = numberOfSocketDomains;
@@ -351,27 +362,43 @@ affinity_init()
     affinityDomains.numberOfCoresPerCache = numberOfCoresPerCache;
     affinityDomains.numberOfProcessorsPerCache = numberOfProcessorsPerCache;
     affinityDomains.domains = domains;
+    affinity_initialized = 1;
 }
 
 
 void
 affinity_finalize()
 {
+    if (affinity_initialized == 0)
+    {
+        return;
+    }
     if (!affinityDomains.domains)
     {
         return;
     }
     for ( int i=0; i < affinityDomains.numberOfAffinityDomains; i++ )
     {
-        if (affinityDomains.domains[i].processorList)
+        if (affinityDomains.domains[i].processorList != NULL)
         {
             free(affinityDomains.domains[i].processorList);
         }
+        affinityDomains.domains[i].processorList = NULL;
     }
-    if (affinityDomains.domains)
+    if (affinityDomains.domains != NULL)
     {
         free(affinityDomains.domains);
     }
+    affinityDomains.domains = NULL;
+    affinity_numberOfDomains = 0;
+    affinityDomains.numberOfAffinityDomains = 0;
+    affinityDomains.numberOfSocketDomains = 0;
+    affinityDomains.numberOfNumaDomains = 0;
+    affinityDomains.numberOfProcessorsPerSocket = 0;
+    affinityDomains.numberOfCacheDomains = 0;
+    affinityDomains.numberOfCoresPerCache = 0;
+    affinityDomains.numberOfProcessorsPerCache = 0;
+    affinity_initialized = 0;
 }
 
 

@@ -42,14 +42,14 @@ all: $(BUILD_DIR) $(OBJ)  $(LIBLUA) $(INTERPRETER)
 $(BUILD_DIR):
 	@mkdir $(BUILD_DIR)
 
-$(STATIC_LIBLUA):
+$(STATIC_LIBLUA): $(OBJ)
 	$(Q)${AR} -cq $(LIBLUA) $(OBJ)
 
-$(SHARED_LIBLUA):
+$(SHARED_LIBLUA): $(OBJ)
 	$(Q)$(CC) $(LFLAGS) -Wl,-soname,$(LIBLUA).$(VERSION) -shared -fPIC -o $(LIBLUA) $(OBJ) $(LIBS)
 
-$(INTERPRETER): $(SHARED_LIBLUA) $(BUILD_DIR)/lua.o
-	$(Q)$(CC) -o $@ $(LFLAGS) $(BUILD_DIR)/lua.o $(LIBLUA) -Wl,-rpath=$(INSTALLED_LIBPREFIX) $(LIBS)
+$(INTERPRETER): $(LIBLUA) $(BUILD_DIR)/lua.o
+	$(Q)$(CC) -o $@ $(LFLAGS) $(BUILD_DIR)/lua.o $(LIBLUA) $(RPATHS) $(LIBS)
 
 #PATTERN RULES
 $(BUILD_DIR)/%.o:  %.c

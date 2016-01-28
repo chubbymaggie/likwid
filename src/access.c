@@ -39,63 +39,72 @@
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-
+#include <pthread.h>
 
 #include <types.h>
 #include <error.h>
 #include <topology.h>
-#include <msr.h>
-#include <pci.h>
-#include <accessClient.h>
+#include <configuration.h>
 #include <perfmon.h>
+#include <registers.h>
 #include <access.h>
+#include <access_client.h>
+#include <access_x86.h>
 
 
-static int globalSocket = -1;
-static int cpuSockets[MAX_NUM_THREADS] = { [0 ... MAX_NUM_THREADS-1] = -1};
+
 static int registeredCpus = 0;
+static int registeredCpuList[MAX_NUM_THREADS] = { [0 ... (MAX_NUM_THREADS-1)] = 0 };
 
-int _HPMinit(int cpu_id)
+
+static int (*access_read)(PciDeviceIndex dev, const int cpu, uint32_t reg, uint64_t *data) = NULL;
+static int (*access_write)(PciDeviceIndex dev, const int cpu, uint32_t reg, uint64_t data) = NULL;
+static int (*access_init) (int cpu_id) = NULL;
+static void (*access_finalize) (int cpu_id) = NULL;
+static int (*access_check) (PciDeviceIndex dev, int cpu_id) = NULL;
+
+void HPMmode(int mode)
 {
-    int ret = 0;
-    if (accessClient_mode == ACCESSMODE_DIRECT)
+    if ((mode == ACCESSMODE_DIRECT) || (mode == ACCESSMODE_DAEMON))
     {
-        ret = msr_init(0);
-        if (ret == 0)
-        {
-            if (cpuid_info.supportUncore)
-            {
-                ret = pci_init(0);
-            }
-        }
+        config.daemonMode = mode;
     }
-    else if (accessClient_mode == ACCESSMODE_DAEMON)
-    {
-        accessClient_init(&cpuSockets[cpu_id]);
-        if (globalSocket == -1)
-        {
-            globalSocket = cpuSockets[cpu_id];
-            ret = msr_init(globalSocket);
-            if (ret == 0)
-            {
-                if (cpuid_info.supportUncore)
-                {
-                    ret = pci_init(globalSocket);
-                }
-            }
-        }
-    }
-    if (ret == 0)
-    {
-        registeredCpus++;
-    }
-    return 0;
 }
 
 int HPMinit(void)
 {
-    return _HPMinit(0);
+    int ret = 0;
+    if (access_init == NULL)
+    {
+#if defined(__x86_64__) || defined(__i386__)
+        if (config.daemonMode == -1)
+        {
+            config.daemonMode = ACCESSMODE_DAEMON;
+        }
+        if (config.daemonMode == ACCESSMODE_DAEMON)
+        {
+            DEBUG_PLAIN_PRINT(DEBUGLEV_DEVELOP, Adjusting functions for x86 architecture in daemon mode);
+            access_init = &access_client_init;
+            access_read = &access_client_read;
+            access_write = &access_client_write;
+            access_finalize = &access_client_finalize;
+            access_check = &access_client_check;
+        }
+        else if (config.daemonMode == ACCESSMODE_DIRECT)
+        {
+            DEBUG_PLAIN_PRINT(DEBUGLEV_DEVELOP, Adjusting functions for x86 architecture in direct mode);
+            access_init = &access_x86_init;
+            access_read = &access_x86_read;
+            access_write = &access_x86_write;
+            access_finalize = &access_x86_finalize;
+            access_check = &access_x86_check;
+        }
+#endif
+    }
+    
+    return 0;
 }
+
 
 int HPMinitialized(void)
 {
@@ -104,38 +113,66 @@ int HPMinitialized(void)
 
 int HPMaddThread(int cpu_id)
 {
-    if (((cpuSockets[cpu_id] == -1) && (accessClient_mode == ACCESSMODE_DAEMON)) ||
-         (accessClient_mode == ACCESSMODE_DIRECT))
+    int ret;
+    if (registeredCpuList[cpu_id] == 0)
     {
-        return _HPMinit(cpu_id);
+        if (access_init != NULL)
+        {
+            ret = access_init(cpu_id);
+            if (ret == 0)
+            {
+                DEBUG_PRINT(DEBUGLEV_DETAIL, Adding CPU %d to access module, cpu_id);
+                registeredCpus++;
+                registeredCpuList[cpu_id] = 1;
+            }
+            else
+            {
+                return ret;
+            }
+        }
+        else
+        {
+            return -ENODEV;
+        }
     }
     return 0;
 }
 
-void HPMfinalize(void)
+void HPMfinalize()
 {
-    msr_finalize();
-    pci_finalize();
-    if (accessClient_mode == ACCESSMODE_DAEMON)
+    if (registeredCpus != 0)
     {
-        for (int i=0;i<cpuid_topology.numHWThreads; i++)
+        for (int i=0; i<cpuid_topology.numHWThreads; i++)
         {
-            if (cpuSockets[i] != -1)
+            if (i >= cpuid_topology.numHWThreads)
             {
-                close(cpuSockets[i]);
-                cpuSockets[i] = -1;
+                break;
+            }
+            if (registeredCpuList[i] == 1)
+            {
+                access_finalize(i);
                 registeredCpus--;
+                registeredCpuList[i] = 0;
             }
         }
     }
-    globalSocket = -1;
+    if (access_init != NULL)
+        access_init = NULL;
+    if (access_finalize != NULL)
+        access_finalize = NULL;
+    if (access_read != NULL)
+        access_read = NULL;
+    if (access_write != NULL)
+        access_write = NULL;
+    if (access_check != NULL)
+        access_check = NULL;
     return;
 }
 
 int HPMread(int cpu_id, PciDeviceIndex dev, uint32_t reg, uint64_t* data)
 {
-    int socket = globalSocket;
     uint64_t tmp = 0x0ULL;
+    *data = 0x0ULL;
     int err = 0;
     if ((dev >= MAX_NUM_PCI_DEVICES) || (data == NULL))
     {
@@ -145,41 +182,20 @@ int HPMread(int cpu_id, PciDeviceIndex dev, uint32_t reg, uint64_t* data)
     {
         return -ERANGE;
     }
-    if (accessClient_mode == ACCESSMODE_DAEMON)
+    if (registeredCpuList[cpu_id] == 0)
     {
-        if ((cpuSockets[cpu_id] >= 0) && (cpuSockets[cpu_id] != socket))
-        {
-            socket = cpuSockets[cpu_id];
-        }
-        else if (socket < 0)
-        {
-            return -ENOENT;
-        }
+        return -ENODEV;
     }
-    *data = 0x0ULL;
-    DEBUG_PRINT(DEBUGLEV_DEVELOP, READ S[%d] C[%d] DEV[%d] R 0x%X, socket, cpu_id, dev, reg);
-    if (dev == MSR_DEV)
-    {
-        err = msr_tread(socket, cpu_id, reg, &tmp);
-        *data = tmp;
-    }
-    else if (pci_checkDevice(dev, cpu_id))
-    {
-        err = pci_tread(socket, cpu_id, dev, reg, (uint32_t*)&tmp);
-        *data = tmp;
-    }
-    DEBUG_PRINT(DEBUGLEV_DEVELOP, READ S[%d] C[%d] DEV[%d] R 0x%X = 0x%llX ERR[%d], socket, cpu_id, dev, reg, LLU_CAST tmp, err);
+    err = access_read(dev, cpu_id, reg, &tmp);
+    *data = tmp;
     return err;
 }
 
 int HPMwrite(int cpu_id, PciDeviceIndex dev, uint32_t reg, uint64_t data)
 {
-    int socket = globalSocket;
     int err = 0;
-    uint64_t tmp;
     if (dev >= MAX_NUM_PCI_DEVICES)
     {
-        ERROR_PRINT(MSR WRITE D %d NOT VALID, dev);
         return -EFAULT;
     }
     if ((cpu_id < 0) || (cpu_id >= cpuid_topology.numHWThreads))
@@ -187,38 +203,19 @@ int HPMwrite(int cpu_id, PciDeviceIndex dev, uint32_t reg, uint64_t data)
         ERROR_PRINT(MSR WRITE C %d OUT OF RANGE, cpu_id);
         return -ERANGE;
     }
-    if (accessClient_mode == ACCESSMODE_DAEMON)
+    if (registeredCpuList[cpu_id] == 0)
     {
-        if ((cpuSockets[cpu_id] >= 0) && (cpuSockets[cpu_id] != socket))
-        {
-            socket = cpuSockets[cpu_id];
-        }
-        if (socket < 0)
-        {
-            ERROR_PRINT(MSR WRITE S %d INVALID, socket);
-            return -ENOENT;
-        }
+        return -ENODEV;
     }
-    DEBUG_PRINT(DEBUGLEV_DEVELOP, WRITE S[%d] C[%d] DEV[%d] R 0x%X D 0x%llX, socket, cpu_id, dev, reg, LLU_CAST data);
-    if (dev == MSR_DEV)
-    {
-        err = msr_twrite(socket, cpu_id, reg, data);
-        DEBUG_PRINT(DEBUGLEV_DEVELOP, WRITE S[%d] C[%d] DEV[%d] R 0x%X D 0x%llX ERR[%d], socket, cpu_id, dev, reg, LLU_CAST data, err);
-        if (perfmon_verbosity == DEBUGLEV_DEVELOP)
-        {
-            int err2 = msr_tread(socket, cpu_id, reg, &tmp);
-            DEBUG_PRINT(DEBUGLEV_DEVELOP, VERIFY S[%d] C[%d] DEV[%d] R 0x%X D 0x%llX ERR[%d] CMP %d, socket, cpu_id, dev, reg, LLU_CAST tmp, err2, (data == tmp));
-        }
-    }
-    else if (pci_checkDevice(dev, cpu_id))
-    {
-        err = pci_twrite(socket, cpu_id, dev, reg, data);
-        DEBUG_PRINT(DEBUGLEV_DEVELOP, WRITE S[%d] C[%d] DEV[%d] R 0x%X D 0x%llX ERR[%d], socket, cpu_id, dev, reg, LLU_CAST data, err);
-        if (perfmon_verbosity == DEBUGLEV_DEVELOP)
-        {
-            int err2 = pci_tread(socket, cpu_id, dev, reg, (uint32_t*)&tmp);
-            DEBUG_PRINT(DEBUGLEV_DEVELOP, VERIFY S[%d] C[%d] DEV[%d] R 0x%X D 0x%llX ERR[%d] CMP %d, socket, cpu_id, dev, reg, LLU_CAST tmp, err2, (data == tmp));
-        }
-    }
+    err = access_write(dev, cpu_id, reg, data);
     return err;
+}
+
+int HPMcheck(PciDeviceIndex dev, int cpu_id)
+{
+    if (registeredCpuList[cpu_id] == 0)
+    {
+        return -ENODEV;
+    }
+    return access_check(dev, cpu_id);
 }

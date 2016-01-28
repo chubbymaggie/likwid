@@ -36,14 +36,11 @@
 
 #include <bstrlib.h>
 #include <timer.h>
+#include <inttypes.h>
 
-#define MAX_EVENT_OPTIONS 4
+#define MAX_EVENT_OPTIONS NUM_EVENT_OPTIONS
 
 /* #####   EXPORTED TYPE DEFINITIONS   #################################### */
-
-extern int socket_fd;
-extern int thread_sockets[MAX_NUM_THREADS];
-
 
 /** \addtogroup PerfMon
  *  @{
@@ -83,6 +80,16 @@ typedef enum {
     EVENT_OPTION_IN_TRANS_ABORT, /*!< \brief Count events that aborted during transactions */
     NUM_EVENT_OPTIONS /*!< \brief Amount of defined options */
 } EventOptionType;
+
+/*! \brief Enum of possible states of an event group
+
+List of states for event groups
+*/
+typedef enum {
+    STATE_NONE = 0, /*!< \brief Not configured, not started and not stopped */
+    STATE_SETUP, /*!< \brief The event set hold by group is configured */
+    STATE_START, /*!< \brief The event set hold by group is current running */
+} GroupState;
 
 /*! \brief List of option names
 
@@ -178,7 +185,7 @@ typedef struct {
     int         overflows; /*!< \brief Amount of overflows */
     uint64_t    startData; /*!< \brief Start data from the counter */
     uint64_t    counterData; /*!< \brief Intermediate data from the counters */
-    double    fullData; /*!< \brief Aggregated data from the counters */
+    double      fullData; /*!< \brief Aggregated data from the counters */
 } PerfmonCounter;
 
 
@@ -205,7 +212,8 @@ typedef struct {
     TimerData             timer; /*!< \brief Time information how long the counters were running */
     double                rdtscTime; /*!< \brief Evaluation of the Time information in seconds */
     double                runTime; /*!< \brief Sum of all time information in seconds that the group was running */
-    uint64_t              regTypeMask; /*!< \brief Bitmask for easy checks which types are included in the eventSet */
+    __uint128_t           regTypeMask; /*!< \brief Bitmask for easy checks which types are included in the eventSet */
+    GroupState            state; /*!< \brief Current state of the event group (configured, started, none) */
 } PerfmonEventSet;
 
 /*! \brief Structure specifying all performance monitoring event groups

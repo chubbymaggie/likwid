@@ -42,8 +42,6 @@
 #include <likwid.h>
 #include <bitUtil.h>
 #include <timer.h>
-#include <msr.h>
-#include <pci.h>
 #include <lock.h>
 #include <perfmon.h>
 #include <registers.h>
@@ -67,20 +65,19 @@
 #include <perfmon_kabini.h>
 #include <perfmon_silvermont.h>
 #include <perfmon_broadwell.h>
+#include <perfmon_skylake.h>
 
 
-PerfmonEvent* eventHash;
+PerfmonEvent* eventHash = NULL;
 RegisterMap* counter_map = NULL;
 BoxMap* box_map = NULL;
 PciDevice* pci_devices = NULL;
 int perfmon_numCounters = 0;
 int perfmon_numCoreCounters = 0;
 int perfmon_numArchEvents = 0;
+int perfmon_initialized = 0;
 int perfmon_verbosity = DEBUGLEV_ONLY_ERROR;
-
-int socket_fd = -1;
-int thread_sockets[MAX_NUM_THREADS] = { [0 ... MAX_NUM_THREADS-1] = -1};
-
+uint64_t currentConfig[MAX_NUM_THREADS][NUM_PMC] = { 0 };
 
 PerfmonGroupSet* groupSet = NULL;
 
@@ -121,13 +118,14 @@ char* eventOptionTypeName[NUM_EVENT_OPTIONS] = {
 };
 
 static int
-getIndexAndType (bstring reg, RegisterIndex* index, RegisterType* type)
+getIndexAndType (bstring reg, RegisterIndex* index, RegisterType* type, int force)
 {
     int err = 0;
     int ret = FALSE;
-    uint64_t tmp;
+    uint64_t tmp = 0x0ULL;
     int (*ownstrcmp)(const char*, const char*);
     ownstrcmp = &strcmp;
+    int testcpu = groupSet->threads[0].processorId;
     for (int i=0; i< perfmon_numCounters; i++)
     {
         if (biseqcstr(reg, counter_map[i].key))
@@ -143,7 +141,8 @@ getIndexAndType (bstring reg, RegisterIndex* index, RegisterType* type)
         *type = NOTYPE;
         return FALSE;
     }
-    if (!pci_checkDevice(counter_map[*index].device, 0))
+    err = HPMcheck(counter_map[*index].device, 0);
+    if (!err)
     {
         *type = NOTYPE;
         return FALSE;
@@ -157,7 +156,7 @@ getIndexAndType (bstring reg, RegisterIndex* index, RegisterType* type)
             reg = counter_map[*index].counterRegister;
             check_settings = 0;
         }
-        err = HPMread(0, counter_map[*index].device, reg, &tmp);
+        err = HPMread(testcpu, counter_map[*index].device, reg, &tmp);
         if (err != 0)
         {
             if (err == -ENODEV)
@@ -173,9 +172,9 @@ getIndexAndType (bstring reg, RegisterIndex* index, RegisterType* type)
             *type = NOTYPE;
             ret = FALSE;
         }
-        else if (tmp == 0x0)
+        else if (tmp == 0x0ULL)
         {
-            err = HPMwrite(0, counter_map[*index].device, reg, 0x0ULL);
+            err = HPMwrite(testcpu, counter_map[*index].device, reg, 0x0ULL);
             if (err != 0)
             {
                 if (err == -ENODEV)
@@ -191,16 +190,27 @@ getIndexAndType (bstring reg, RegisterIndex* index, RegisterType* type)
                 *type = NOTYPE;
                 ret = FALSE;
             }
+            check_settings = 0;
         }
-        else if (check_settings)
+        if ((check_settings) && (tmp != 0x0ULL))
         {
-            DEBUG_PRINT(DEBUGLEV_DETAIL, Counter %s has bits set but we ignore it,
-                                             counter_map[*index].key);
+            if (force == 1)
+            {
+                DEBUG_PRINT(DEBUGLEV_DETAIL, Counter %s has bits set (0x%llx) but we are forced to overwrite them,
+                                             counter_map[*index].key, tmp);
+                err = HPMwrite(testcpu, counter_map[*index].device, reg, 0x0ULL);
+            }
+            else if ((force == 0) && ((*type != FIXED)&&(*type != THERMAL)&&(*type != POWER)&&(*type != WBOX0FIX)))
+            {
+                fprintf(stderr, "ERROR: The selected register %s is in use.\n", counter_map[*index].key);
+                fprintf(stderr, "Please run likwid with force option (-f, --force) to overwrite settings\n");
+                exit(EXIT_SUCCESS);
+            }
         }
     }
     else if ((ret) && ((*type == POWER) || (*type == WBOX0FIX) || (*type == THERMAL)))
     {
-        err = HPMread(0, MSR_DEV, counter_map[*index].counterRegister, &tmp);
+        err = HPMread(testcpu, MSR_DEV, counter_map[*index].counterRegister, &tmp);
         if (err != 0)
         {
             DEBUG_PRINT(DEBUGLEV_DETAIL, Counter %s not readable on this machine,
@@ -267,7 +277,7 @@ getEvent(bstring event_str, bstring counter_str, PerfmonEvent* event)
     return ret;
 }
 
-static int 
+static int
 assignOption(PerfmonEvent* event, bstring entry, int index, EventOptionType type, int zero_value)
 {
     int found_double = -1;
@@ -516,7 +526,7 @@ parseOptions(struct bstrList* tokens, PerfmonEvent* event, RegisterIndex index)
                     break;
                 }
             }
-            if ((threshold_set == FALSE) && (event->numberOfOptions < MAX_EVENT_OPTIONS) && 
+            if ((threshold_set == FALSE) && (event->numberOfOptions < MAX_EVENT_OPTIONS) &&
                 (edge_set == TRUE || invert_set == TRUE ))
             {
                 event->options[event->numberOfOptions].type = EVENT_OPTION_THRESHOLD;
@@ -583,6 +593,11 @@ getCounterTypeOffset(int index)
     return off;
 }
 
+void perfmon_setVerbosity(int level)
+{
+    if ((level >= DEBUGLEV_ONLY_ERROR) && (level <= DEBUGLEV_DEVELOP))
+        perfmon_verbosity = level;
+}
 
 void
 perfmon_init_maps(void)
@@ -735,13 +750,30 @@ perfmon_init_maps(void)
 
                 case BROADWELL:
                 case BROADWELL_E:
-                case BROADWELL_D:
                     box_map = broadwell_box_map;
                     eventHash = broadwell_arch_events;
                     counter_map = broadwell_counter_map;
                     perfmon_numArchEvents = perfmon_numArchEventsBroadwell;
                     perfmon_numCounters = perfmon_numCountersBroadwell;
                     perfmon_numCoreCounters = perfmon_numCoreCountersBroadwell;
+                    break;
+                case BROADWELL_D:
+                    box_map = broadwelld_box_map;
+                    eventHash = broadwelld_arch_events;
+                    counter_map = broadwelld_counter_map;
+                    perfmon_numArchEvents = perfmon_numArchEventsBroadwellD;
+                    perfmon_numCounters = perfmon_numCountersBroadwellD;
+                    perfmon_numCoreCounters = perfmon_numCoreCountersBroadwellD;
+                    break;
+
+                case SKYLAKE1:
+                case SKYLAKE2:
+                    box_map = skylake_box_map;
+                    eventHash = skylake_arch_events;
+                    counter_map = skylake_counter_map;
+                    perfmon_numArchEvents = perfmon_numArchEventsSkylake;
+                    perfmon_numCounters = perfmon_numCountersSkylake;
+                    perfmon_numCoreCounters = perfmon_numCoreCountersSkylake;
                     break;
 
                 default:
@@ -963,6 +995,18 @@ perfmon_init_funcs(int* init_power, int* init_temp)
                     perfmon_finalizeCountersThread = perfmon_finalizeCountersThread_broadwell;
                     break;
 
+                case SKYLAKE1:
+                case SKYLAKE2:
+                    initialize_power = TRUE;
+                    initialize_thermal = TRUE;
+                    initThreadArch = perfmon_init_skylake;
+                    perfmon_startCountersThread = perfmon_startCountersThread_skylake;
+                    perfmon_stopCountersThread = perfmon_stopCountersThread_skylake;
+                    perfmon_readCountersThread = perfmon_readCountersThread_skylake;
+                    perfmon_setupCountersThread = perfmon_setupCounterThread_skylake;
+                    perfmon_finalizeCountersThread = perfmon_finalizeCountersThread_skylake;
+                    break;
+
                 default:
                     ERROR_PLAIN_PRINT(Unsupported Processor);
                     break;
@@ -1041,18 +1085,29 @@ perfmon_init(int nrThreads, int threadsToCpu[])
     int initialize_power = FALSE;
     int initialize_thermal = FALSE;
 
+    if (perfmon_initialized == 1)
+    {
+        return 0;
+    }
+
     if (nrThreads <= 0)
     {
         ERROR_PRINT(Number of threads must be greater than 0 but only %d given,nrThreads);
         return -EINVAL;
     }
-    
+
     if (!lock_check())
     {
         ERROR_PLAIN_PRINT(Access to performance monitoring registers locked);
         return -EINVAL;
     }
-    
+
+    if ((cpuid_info.family == 0) && (cpuid_info.model == 0))
+    {
+        ERROR_PLAIN_PRINT(Topology module not inialized. Needed to determine current CPU type);
+        return -ENODEV;
+    }
+
     /* Check threadsToCpu array if only valid cpu_ids are listed */
     if (groupSet != NULL)
     {
@@ -1061,7 +1116,7 @@ perfmon_init(int nrThreads, int threadsToCpu[])
          */
         return -EEXIST;
     }
-    
+
     groupSet = (PerfmonGroupSet*) malloc(sizeof(PerfmonGroupSet));
     if (groupSet == NULL)
     {
@@ -1078,6 +1133,8 @@ perfmon_init(int nrThreads, int threadsToCpu[])
     groupSet->numberOfThreads = nrThreads;
     groupSet->numberOfGroups = 0;
     groupSet->numberOfActiveGroups = 0;
+    groupSet->groups = NULL;
+    groupSet->activeGroup = -1;
 
     for(i=0; i<MAX_NUM_NODES; i++) socket_lock[i] = LOCK_INIT;
     for(i=0; i<MAX_NUM_THREADS; i++) tile_lock[i] = LOCK_INIT;
@@ -1086,17 +1143,18 @@ perfmon_init(int nrThreads, int threadsToCpu[])
     perfmon_init_maps();
 
     /* Initialize access interface */
-    ret = HPMaddThread(threadsToCpu[0]);
+    ret = HPMinit();
     if (ret)
     {
-        ERROR_PLAIN_PRINT(Cannot get access to performance counters);
+        ERROR_PLAIN_PRINT(Cannot set access functions);
         free(groupSet->threads);
         free(groupSet);
+        exit(EXIT_FAILURE);
         return ret;
     }
     timer_init();
 
-    
+
     /* Initialize function pointer to current architecture functions */
     perfmon_init_funcs(&initialize_power, &initialize_thermal);
 
@@ -1104,6 +1162,10 @@ perfmon_init(int nrThreads, int threadsToCpu[])
     /* If the arch supports it, initialize power and thermal measurements */
     for(i=0;i<nrThreads;i++)
     {
+        if (HPMaddThread(threadsToCpu[i]) != 0)
+        {
+            ERROR_PLAIN_PRINT(Cannot get access to performance counters);
+        }
         groupSet->threads[i].thread_id = i;
         groupSet->threads[i].processorId = threadsToCpu[i];
 
@@ -1117,35 +1179,56 @@ perfmon_init(int nrThreads, int threadsToCpu[])
         }
         initThreadArch(threadsToCpu[i]);
     }
+    perfmon_initialized = 1;
     return 0;
 }
 
-void 
+void
 perfmon_finalize(void)
 {
     int group, event;
     int thread;
-    for(group=0;group < groupSet->numberOfGroups; group++)
+    if (perfmon_initialized == 0)
     {
+        return;
+    }
+    if (groupSet == NULL)
+    {
+        return;
+    }
+    for(group=0;group < groupSet->numberOfActiveGroups; group++)
+    {
+        
         for (thread=0;thread< groupSet->numberOfThreads; thread++)
         {
             perfmon_finalizeCountersThread(thread, &(groupSet->groups[group]));
         }
         for (event=0;event < groupSet->groups[group].numberOfEvents; event++)
         {
-            free(groupSet->groups[group].events[event].threadCounter);
+            if (groupSet->groups[group].events[event].threadCounter)
+                free(groupSet->groups[group].events[event].threadCounter);
         }
-        free(groupSet->groups[group].events);
+        if (groupSet->groups[group].events != NULL)
+            free(groupSet->groups[group].events);
+        groupSet->groups[group].state = STATE_NONE;
     }
-    
-    free(groupSet->threads);
-    free(groupSet);
-    HPMfinalize();
+    if (groupSet->threads != NULL)
+        free(groupSet->threads);
+    groupSet->activeGroup = -1;
+    if (groupSet)
+        free(groupSet);
+    for (group=0; group < MAX_NUM_THREADS; group++)
+    {
+        memset(currentConfig[group], 0, NUM_PMC * sizeof(uint64_t));
+    }
     power_finalize();
+    HPMfinalize();
+    perfmon_initialized = 0;
+    groupSet = NULL;
     return;
 }
 
-int 
+int
 perfmon_addEventSet(char* eventCString)
 {
     int i, j;
@@ -1154,6 +1237,12 @@ perfmon_addEventSet(char* eventCString)
     struct bstrList* subtokens;
     PerfmonEventSet* eventSet;
     PerfmonEventSetEntry* event;
+    char* cstringcopy;
+    if (perfmon_initialized != 1)
+    {
+        ERROR_PLAIN_PRINT(Perfmon module not properly initialized);
+        return -EINVAL;
+    }
 
     if (eventCString == NULL)
     {
@@ -1176,7 +1265,7 @@ perfmon_addEventSet(char* eventCString)
         ERROR_PLAIN_PRINT(Event string contains invalid character .);
         return -EINVAL;
     }
-    if (groupSet->numberOfGroups == 0)
+    if (groupSet->numberOfActiveGroups == 0)
     {
         groupSet->groups = (PerfmonEventSet*) malloc(sizeof(PerfmonEventSet));
         if (groupSet->groups == NULL)
@@ -1184,19 +1273,18 @@ perfmon_addEventSet(char* eventCString)
             ERROR_PLAIN_PRINT(Cannot allocate initialize of event group list);
             return -ENOMEM;
         }
-
         groupSet->numberOfGroups = 1;
         groupSet->numberOfActiveGroups = 0;
+        groupSet->activeGroup = -1;
 
         /* Only one group exists by now */
         groupSet->groups[0].rdtscTime = 0;
         groupSet->groups[0].runTime = 0;
         groupSet->groups[0].numberOfEvents = 0;
     }
-    
-    if (groupSet->numberOfActiveGroups == groupSet->numberOfGroups)
+
+    if ((groupSet->numberOfActiveGroups > 0) && (groupSet->numberOfActiveGroups == groupSet->numberOfGroups))
     {
-        
         groupSet->numberOfGroups++;
         groupSet->groups = (PerfmonEventSet*)realloc(groupSet->groups, groupSet->numberOfGroups*sizeof(PerfmonEventSet));
         if (groupSet->groups == NULL)
@@ -1213,14 +1301,12 @@ perfmon_addEventSet(char* eventCString)
                     groupSet->numberOfActiveGroups+1,
                     groupSet->numberOfGroups+1);
 
-    eventSet = &(groupSet->groups[groupSet->numberOfActiveGroups]);
-
     eventBString = bfromcstr(eventCString);
     eventtokens = bstrListCreate();
     eventtokens = bsplit(eventBString,',');
     bdestroy(eventBString);
+    eventSet = &(groupSet->groups[groupSet->numberOfActiveGroups]);
     eventSet->events = (PerfmonEventSetEntry*) malloc(eventtokens->qty * sizeof(PerfmonEventSetEntry));
-    
     if (eventSet->events == NULL)
     {
         ERROR_PRINT(Cannot allocate event list for group %d\n, groupSet->numberOfActiveGroups);
@@ -1228,9 +1314,14 @@ perfmon_addEventSet(char* eventCString)
     }
     eventSet->numberOfEvents = 0;
     eventSet->regTypeMask = 0x0ULL;
-
-    subtokens = bstrListCreate();
     
+
+    int forceOverwrite = 0;
+    if (getenv("LIKWID_FORCE") != NULL)
+    {
+        forceOverwrite = atoi(getenv("LIKWID_FORCE"));
+    }
+    subtokens = bstrListCreate();
     for(i=0;i<eventtokens->qty;i++)
     {
         event = &(eventSet->events[i]);
@@ -1242,7 +1333,7 @@ perfmon_addEventSet(char* eventCString)
         }
         else
         {
-            if (!getIndexAndType(subtokens->entry[1], &event->index, &event->type))
+            if (!getIndexAndType(subtokens->entry[1], &event->index, &event->type, forceOverwrite))
             {
                 DEBUG_PRINT(DEBUGLEV_INFO, Counter register %s not supported or PCI device not available,
                             bdata(subtokens->entry[1]));
@@ -1257,7 +1348,7 @@ perfmon_addEventSet(char* eventCString)
                 event->type = NOTYPE;
                 goto past_checks;
             }
-           
+
             if (!checkCounter(subtokens->entry[1], event->event.limit))
             {
                 DEBUG_PRINT(DEBUGLEV_INFO, Register %s not allowed for event %s,
@@ -1271,7 +1362,7 @@ perfmon_addEventSet(char* eventCString)
                 event->type = NOTYPE;
                 goto past_checks;
             }
-            
+
             eventSet->regTypeMask |= REG_TYPE_MASK(event->type);
 past_checks:
             event->threadCounter = (PerfmonCounter*) malloc(
@@ -1305,9 +1396,10 @@ past_checks:
     }
     bstrListDestroy(subtokens);
     bstrListDestroy(eventtokens);
-    groupSet->numberOfActiveGroups++;
     if ((eventSet->numberOfEvents > 0) && (eventSet->regTypeMask != 0x0ULL))
     {
+        eventSet->state = STATE_NONE;
+        groupSet->numberOfActiveGroups++;
         return groupSet->numberOfActiveGroups-1;
     }
     else
@@ -1339,6 +1431,21 @@ perfmon_setupCounters(int groupId)
 {
     int i;
     int ret = 0;
+    if (perfmon_initialized != 1)
+    {
+        ERROR_PLAIN_PRINT(Perfmon module not properly initialized);
+        return -EINVAL;
+    }
+    if (unlikely(groupSet == NULL))
+    {
+        return -EINVAL;
+    }
+    if (groupId >= groupSet->numberOfActiveGroups)
+    {
+        ERROR_PRINT(Group %d does not exist in groupSet, groupId);
+        return -ENOENT;
+    }
+    
     for(i=0;i<groupSet->numberOfThreads;i++)
     {
         ret = __perfmon_setupCountersThread(groupSet->threads[i].thread_id, groupId);
@@ -1347,6 +1454,7 @@ perfmon_setupCounters(int groupId)
             return ret;
         }
     }
+    groupSet->groups[groupId].state = STATE_SETUP;
     return 0;
 }
 
@@ -1355,9 +1463,9 @@ __perfmon_startCounters(int groupId)
 {
     int i = 0;
     int ret = 0;
-    if ((groupId < 0) || (groupId >= groupSet->numberOfActiveGroups))
+    if (groupSet->groups[groupId].state != STATE_SETUP)
     {
-        groupId = groupSet->activeGroup;
+        return -EINVAL;
     }
     for(;i<groupSet->numberOfThreads;i++)
     {
@@ -1367,17 +1475,51 @@ __perfmon_startCounters(int groupId)
             return -groupSet->threads[i].thread_id-1;
         }
     }
+    groupSet->groups[groupId].state = STATE_START;
     timer_start(&groupSet->groups[groupId].timer);
     return 0;
 }
 
 int perfmon_startCounters(void)
 {
-    return __perfmon_startCounters(-1);
+    if (perfmon_initialized != 1)
+    {
+        ERROR_PLAIN_PRINT(Perfmon module not properly initialized);
+        return -EINVAL;
+    }
+    if (unlikely(groupSet == NULL))
+    {
+        ERROR_PLAIN_PRINT(Perfmon module not properly initialized);
+        return -EINVAL;
+    }
+    if (groupSet->activeGroup < 0)
+    {
+        ERROR_PLAIN_PRINT(Cannot find group to start);
+        return -EINVAL;
+    }
+    return __perfmon_startCounters(groupSet->activeGroup);
 }
 
 int perfmon_startGroupCounters(int groupId)
 {
+    if (perfmon_initialized != 1)
+    {
+        ERROR_PLAIN_PRINT(Perfmon module not properly initialized);
+        return -EINVAL;
+    }
+    if (unlikely(groupSet == NULL))
+    {
+        return -EINVAL;
+    }
+    if (((groupId < 0) || (groupId >= groupSet->numberOfActiveGroups)) && (groupSet->activeGroup >= 0))
+    {
+        groupId = groupSet->activeGroup;
+    }
+    else
+    {
+        ERROR_PLAIN_PRINT(Cannot find group to start);
+        return -EINVAL;
+    }
     return __perfmon_startCounters(groupId);
 }
 
@@ -1389,11 +1531,6 @@ __perfmon_stopCounters(int groupId)
     int ret = 0;
     double result = 0.0;
 
-    if ((groupId < 0) || (groupId >= groupSet->numberOfActiveGroups))
-    {
-        groupId = groupSet->activeGroup;
-    }
-
     timer_stop(&groupSet->groups[groupId].timer);
 
     for (i = 0; i<groupSet->numberOfThreads; i++)
@@ -1404,7 +1541,7 @@ __perfmon_stopCounters(int groupId)
             return -groupSet->threads[i].thread_id-1;
         }
     }
-    
+
     for (i=0; i<perfmon_getNumberOfEvents(groupId); i++)
     {
         for (j=0; j<perfmon_getNumberOfThreads(); j++)
@@ -1413,7 +1550,7 @@ __perfmon_stopCounters(int groupId)
             groupSet->groups[groupId].events[i].threadCounter[j].fullData += result;
         }
     }
-
+    groupSet->groups[groupId].state = STATE_SETUP;
     groupSet->groups[groupId].rdtscTime =
                 timer_print(&groupSet->groups[groupId].timer);
     groupSet->groups[groupId].runTime += groupSet->groups[groupId].rdtscTime;
@@ -1422,11 +1559,51 @@ __perfmon_stopCounters(int groupId)
 
 int perfmon_stopCounters(void)
 {
-    return __perfmon_stopCounters(-1);
+    if (perfmon_initialized != 1)
+    {
+        ERROR_PLAIN_PRINT(Perfmon module not properly initialized);
+        return -EINVAL;
+    }
+    if (unlikely(groupSet == NULL))
+    {
+        return -EINVAL;
+    }
+    if (groupSet->activeGroup < 0)
+    {
+        ERROR_PLAIN_PRINT(Cannot find group to start);
+        return -EINVAL;
+    }
+    if (groupSet->groups[groupSet->activeGroup].state != STATE_START)
+    {
+        return -EINVAL;
+    }
+    return __perfmon_stopCounters(groupSet->activeGroup);
 }
 
 int perfmon_stopGroupCounters(int groupId)
 {
+    if (perfmon_initialized != 1)
+    {
+        ERROR_PLAIN_PRINT(Perfmon module not properly initialized);
+        return -EINVAL;
+    }
+    if (unlikely(groupSet == NULL))
+    {
+        return -EINVAL;
+    }
+    if (((groupId < 0) || (groupId >= groupSet->numberOfActiveGroups)) && (groupSet->activeGroup >= 0))
+    {
+        groupId = groupSet->activeGroup;
+    }
+    else
+    {
+        ERROR_PLAIN_PRINT(Cannot find group to start);
+        return -EINVAL;
+    }
+    if (groupSet->groups[groupId].state != STATE_START)
+    {
+        return -EINVAL;
+    }
     return __perfmon_stopCounters(groupId);
 }
 
@@ -1435,9 +1612,18 @@ __perfmon_readCounters(int groupId, int threadId)
 {
     int ret = 0;
     int i = 0;
-    if ((groupId < 0) || (groupId >= groupSet->numberOfActiveGroups))
+    if (perfmon_initialized != 1)
+    {
+        ERROR_PLAIN_PRINT(Perfmon module not properly initialized);
+        return -EINVAL;
+    }
+    if (((groupId < 0) || (groupId >= groupSet->numberOfActiveGroups)) && (groupSet->activeGroup >= 0))
     {
         groupId = groupSet->activeGroup;
+    }
+    if (groupSet->groups[groupId].state != STATE_START)
+    {
+        return -EINVAL;
     }
     if (threadId == -1)
     {
@@ -1470,6 +1656,11 @@ int perfmon_readCountersCpu(int cpu_id)
 {
     int i;
     int thread_id = 0;
+    if (perfmon_initialized != 1)
+    {
+        ERROR_PLAIN_PRINT(Perfmon module not properly initialized);
+        return -EINVAL;
+    }
     for(i=0;i<groupSet->numberOfThreads;i++)
     {
         if (groupSet->threads[i].processorId == cpu_id)
@@ -1498,7 +1689,16 @@ perfmon_getResult(int groupId, int eventId, int threadId)
     {
         return 0;
     }
-    if (groupId < 0)
+    if (perfmon_initialized != 1)
+    {
+        ERROR_PLAIN_PRINT(Perfmon module not properly initialized);
+        return 0;
+    }
+    if (groupSet->numberOfActiveGroups == 0)
+    {
+        return 0;
+    }
+    if ((groupId < 0) && (groupSet->activeGroup >= 0))
     {
         groupId = groupSet->activeGroup;
     }
@@ -1524,24 +1724,43 @@ int __perfmon_switchActiveGroupThread(int thread_id, int new_group)
 {
     int ret;
     int i;
-    ret = perfmon_stopCounters();
-    if (ret != 0)
+    GroupState state;
+    if (perfmon_initialized != 1)
     {
-        return ret;
+        ERROR_PLAIN_PRINT(Perfmon module not properly initialized);
+        return -EINVAL;
     }
-    for(i=0; i<groupSet->groups[groupSet->activeGroup].numberOfEvents;i++)
+
+    timer_stop(&groupSet->groups[groupSet->activeGroup].timer);
+    groupSet->groups[groupSet->activeGroup].rdtscTime =
+                timer_print(&groupSet->groups[groupSet->activeGroup].timer);
+    groupSet->groups[groupSet->activeGroup].runTime += groupSet->groups[groupSet->activeGroup].rdtscTime;
+    state = groupSet->groups[groupSet->activeGroup].state;
+
+    if (state == STATE_START)
     {
-        groupSet->groups[groupSet->activeGroup].events[i].threadCounter[thread_id].init = FALSE;
+        ret = perfmon_stopCounters();
+    }
+
+    if (state == STATE_SETUP)
+    {
+        for(i=0; i<groupSet->groups[groupSet->activeGroup].numberOfEvents;i++)
+        {
+            groupSet->groups[groupSet->activeGroup].events[i].threadCounter[thread_id].init = FALSE;
+        }
     }
     ret = perfmon_setupCounters(new_group);
     if (ret != 0)
     {
         return ret;
     }
-    ret = perfmon_startCounters();
-    if (ret != 0)
+    if (state == STATE_START)
     {
-        return ret;
+        ret = perfmon_startCounters();
+        if (ret != 0)
+        {
+            return ret;
+        }
     }
     return 0;
 }
@@ -1565,24 +1784,44 @@ perfmon_switchActiveGroup(int new_group)
 int
 perfmon_getNumberOfGroups(void)
 {
+    if (perfmon_initialized != 1)
+    {
+        ERROR_PLAIN_PRINT(Perfmon module not properly initialized);
+        return -EINVAL;
+    }
     return groupSet->numberOfActiveGroups;
 }
 
 int
 perfmon_getIdOfActiveGroup(void)
 {
+    if (perfmon_initialized != 1)
+    {
+        ERROR_PLAIN_PRINT(Perfmon module not properly initialized);
+        return -EINVAL;
+    }
     return groupSet->activeGroup;
 }
 
 int
 perfmon_getNumberOfThreads(void)
 {
+    if (perfmon_initialized != 1)
+    {
+        ERROR_PLAIN_PRINT(Perfmon module not properly initialized);
+        return -EINVAL;
+    }
     return groupSet->numberOfThreads;
 }
 
 int
 perfmon_getNumberOfEvents(int groupId)
 {
+    if (perfmon_initialized != 1)
+    {
+        ERROR_PLAIN_PRINT(Perfmon module not properly initialized);
+        return -EINVAL;
+    }
     if (groupId < 0)
     {
         groupId = groupSet->activeGroup;
@@ -1593,6 +1832,11 @@ perfmon_getNumberOfEvents(int groupId)
 double
 perfmon_getTimeOfGroup(int groupId)
 {
+    if (perfmon_initialized != 1)
+    {
+        ERROR_PLAIN_PRINT(Perfmon module not properly initialized);
+        return -EINVAL;
+    }
     if (groupId < 0)
     {
         groupId = groupSet->activeGroup;

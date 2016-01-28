@@ -92,9 +92,9 @@
 #define MSR_UNCORE_PMC6                0x3B6
 #define MSR_UNCORE_PMC7                0x3B7
 /* 
- * Perfmon V4 (starting with Haswell, according to 
+ * Perfmon V3 (starting with Haswell, according to 
  * Intel software developers guide also for SandyBridge,
- * IvyBridge not mentioned in this section) 
+ * IvyBridge not mentioned in this section)
  */
 #define MSR_UNC_PERF_GLOBAL_CTRL       MSR_UNCORE_PERF_GLOBAL_CTRL
 #define MSR_UNC_PERF_GLOBAL_STATUS     MSR_UNCORE_PERF_GLOBAL_STATUS
@@ -122,6 +122,10 @@
 #define MSR_UNC_CBO_3_PERFEVTSEL1      0x731
 #define MSR_UNC_CBO_3_CTR0             0x736
 #define MSR_UNC_CBO_3_CTR1             0x737
+/* Perfmon V4 starting with Skylake */
+#define MSR_PERF_GLOBAL_STATUS_SET    0x391
+#define MSR_PERF_GLOBAL_INUSE         0x392
+#define MSR_PEBS_FRONTEND             0x3F7
 /* Xeon Phi */
 #define MSR_MIC_TSC                   0x010
 #define MSR_MIC_PERFEVTSEL0           0x028
@@ -132,6 +136,9 @@
 #define MSR_MIC_PERF_GLOBAL_STATUS    0x02D
 #define MSR_MIC_PERF_GLOBAL_OVF_CTRL  0x02E
 #define MSR_MIC_PERF_GLOBAL_CTRL      0x02F
+/* Xeon Phi (Knights Landing)*/
+#define MSR_MIC2_PMC0                 0x4C1
+#define MSR_MIC2_PMC1                 0x4C2
 
 
 /* Core v1/v2 type uncore
@@ -1195,6 +1202,7 @@
 
 /* Turbo Boost Interface */
 #define MSR_IA32_MISC_ENABLE            0x1A0
+#define MSR_PREFETCH_ENABLE             0x1A4
 #define MSR_PLATFORM_INFO               0x0CE
 #define MSR_TURBO_POWER_CURRENT_LIMIT   0x1AC
 #define MSR_TURBO_RATIO_LIMIT           0x1AD

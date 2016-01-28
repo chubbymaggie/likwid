@@ -79,6 +79,7 @@ else
 end
 time_interval = 2.E06
 time_orig = "2s"
+read_interval = 30.E06
 sockets = {}
 domainList = {"PKG", "PP0", "PP1", "DRAM"}
 
@@ -137,6 +138,9 @@ for opt,arg in likwid.getopt(arg, {"V:", "c:", "h", "i", "M:", "p", "s:", "v", "
         stethoscope = true
     elseif opt == "?" then
         print("Invalid commandline option -"..arg)
+        os.exit(1)
+    elseif opt == "!" then
+        print("Option requires an argument")
         os.exit(1)
     end
 end
@@ -259,13 +263,11 @@ if #arg == 0 then
         stethoscope = true
     end
 else
-    for i=1,#arg do
-        execString = execString .. arg[i] .. " "
-    end
+    execString = table.concat(arg," ",1, likwid.tablelength(arg)-2)
 end
 
 if not print_info and not print_temp then
-    if stethoscope then
+    if stethoscope or (#arg > 0 and not use_perfctr) then
         for i,socket in pairs(sockets) do
             cpu = cpulist[i]
             for idx, dom in pairs(domainList) do
@@ -274,7 +276,49 @@ if not print_info and not print_temp then
         end
 
         time_before = likwid.startClock()
-        likwid.sleep(time_interval)
+        if stethoscope then
+            if read_interval < time_interval then
+                while ((read_interval <= time_interval) and (time_interval > 0)) do
+                    likwid.sleep(read_interval)
+                    for i,socket in pairs(sockets) do
+                        cpu = cpulist[i]
+                        for idx, dom in pairs(domainList) do
+                            if (power["domains"][dom]["supportStatus"]) then after[cpu][dom] = likwid.stopPower(cpu, idx) end
+                        end
+                    end
+                    time_interval = time_interval - read_interval
+                    if time_interval < read_interval then
+                        read_interval = time_interval
+                    end
+                end
+            else
+                likwid.sleep(time_interval)
+            end
+        else
+            local pid = likwid.startProgram(execString, 0, {})
+            if not pid then
+                print(string.format("Failed to execute %s!",execString))
+                likwid.finalize()
+                os.exit(1)
+            end
+            while true do
+                if likwid.getSignalState() ~= 0 then
+                    likwid.killProgram()
+                    break
+                end
+                local remain = likwid.sleep(read_interval)
+                for i,socket in pairs(sockets) do
+                    cpu = cpulist[i]
+                    for idx, dom in pairs(domainList) do
+                        if (power["domains"][dom]["supportStatus"]) then after[cpu][dom] = likwid.stopPower(cpu, idx) end
+                    end
+                end
+                if remain > 0 or not likwid.checkProgram() then
+                    io.stdout:flush()
+                    break
+                end
+            end
+        end
         time_after = likwid.stopClock()
 
         for i,socket in pairs(sockets) do
@@ -314,7 +358,6 @@ end
 
 if print_temp and (string.find(cpuinfo["features"],"TM2") ~= nil) then
     print(likwid.hline)
-    likwid.initTemp(cpulist[i]);
     print("Current core temperatures:");
     for i=1,cputopo["numSockets"] do
         local tag = "S" .. tostring(i-1)
@@ -322,10 +365,12 @@ if print_temp and (string.find(cpuinfo["features"],"TM2") ~= nil) then
             if domain["tag"] == tag then
                 for j=1,#domain["processorList"] do
                     local cpuid = domain["processorList"][j]
+                    likwid.initTemp(cpuid);
                     if (fahrenheit) then
-                        print(string.format("Socket %d Core %d: %u F",i-1,cpuid, 1.8*likwid.readTemp(cpuid)+32));
+                        local f = 1.8*tonumber(likwid.readTemp(cpuid))+32
+                        print(string.format("Socket %d Core %d: %.0f F",i-1,cpuid, f));
                     else
-                        print(string.format("Socket %d Core %d: %u C",i-1,cpuid, likwid.readTemp(cpuid)));
+                        print(string.format("Socket %d Core %d: %.0f C",i-1,cpuid, tonumber(likwid.readTemp(cpuid))));
                     end
                 end
             end

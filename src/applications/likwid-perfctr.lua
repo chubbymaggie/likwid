@@ -63,6 +63,7 @@ local function usage()
     print("-E <string>\t\t List available events and corresponding counters that match <string>")
     print("-i, --info\t\t Print CPU info")
     print("-T <time>\t\t Switch eventsets with given frequency")
+    print("-f, --force\t\t Force overwrite of registers if they are in use")
     print("Modes:")
     print("-S <time>\t\t Stethoscope mode with duration in s, ms or us, e.g 20ms")
     print("-t <time>\t\t Timeline mode with frequency in s, ms or us, e.g. 300ms")
@@ -116,8 +117,9 @@ output = ""
 use_csv = false
 execString = nil
 outfile = nil
+forceOverwrite = 0
 gotC = false
-markerFile = string.format("/tmp/likwid_%d.txt",likwid.getpid("pid"))
+markerFile = string.format("/tmp/likwid_%d.txt",likwid.getpid())
 print_stdout = print
 cpuClock = 1
 likwid.catchSignal()
@@ -127,7 +129,7 @@ if #arg == 0 then
     os.exit(0)
 end
 
-for opt,arg in likwid.getopt(arg, {"a", "c:", "C:", "e", "E:", "g:", "h", "H", "i", "m", "M:", "o:", "O", "P", "s:", "S:", "t:", "v", "V:","T:", "group:", "help", "info", "version", "verbose:", "output:", "skip:", "marker"}) do
+for opt,arg in likwid.getopt(arg, {"a", "c:", "C:", "e", "E:", "g:", "h", "H", "i", "m", "M:", "o:", "O", "P", "s:", "S:", "t:", "v", "V:", "T:", "f", "group:", "help", "info", "version", "verbose:", "output:", "skip:", "marker", "force"}) do
     if (type(arg) == "string") then
         local s,e = arg:find("-");
         if s == 1 then
@@ -158,6 +160,8 @@ for opt,arg in likwid.getopt(arg, {"a", "c:", "C:", "e", "E:", "g:", "h", "H", "
         print_events = true
     elseif (opt == "E") then
         print_event = arg
+    elseif opt == "f" or opt == "force" then
+        forceOverwrite = 1
     elseif opt == "g" or opt == "group" then
         table.insert(event_string_list, arg)
     elseif (opt == "H") then
@@ -200,7 +204,10 @@ for opt,arg in likwid.getopt(arg, {"a", "c:", "C:", "e", "E:", "g:", "h", "H", "
     elseif (opt == "T") then
         duration = likwid.parse_time(arg)
     elseif opt == "o" or opt == "output" then
-        local suffix = string.match(arg, ".-[^\\/]-%.?([^%.\\/]*)$")
+        local suffix = ""
+        if string.match(arg, "%.") then
+            suffix = string.match(arg, ".-[^\\/]-%.?([^%.\\/]*)$")
+        end
         if suffix ~= "txt" then
             use_csv = true
         end
@@ -208,18 +215,22 @@ for opt,arg in likwid.getopt(arg, {"a", "c:", "C:", "e", "E:", "g:", "h", "H", "
         outfile = outfile:gsub("%%p", likwid.getpid())
         outfile = outfile:gsub("%%j", likwid.getjid())
         outfile = outfile:gsub("%%r", likwid.getMPIrank())
-        io.output(outfile:gsub(string.match(arg, ".-[^\\/]-%.?([^%.\\/]*)$"),"tmp"))
+        io.output(outfile..".tmp")
         print = function(...) for k,v in pairs({...}) do io.write(v .. "\n") end end
     elseif (opt == "O") then
         use_csv = true
     elseif opt == "?" then
         print("Invalid commandline option -"..arg)
         os.exit(1)
+    elseif opt == "!" then
+        print("Option requires an argument")
+        os.exit(1)
     end
 end
 
 io.stdout:setvbuf("no")
 cpuinfo = likwid.getCpuInfo()
+cputopo = likwid.getCpuTopology()
 
 if not likwid.msr_available(access_flags) then
     if access_mode == 1 then
@@ -280,6 +291,7 @@ if print_events == true then
         end
         print_stdout(outstr)
     end
+    print_stdout("\n\n")
     print_stdout(string.format("This architecture has %d events.",#tab["Events"]))
     print_stdout("Event tags (tag, id, umask, counters<, options>):")
     for _, eventTab in pairs(tab["Events"]) do
@@ -295,12 +307,22 @@ if print_events == true then
 end
 
 if print_event ~= nil then
+    function case_insensitive_pattern(pattern)
+        local p = pattern:gsub("(%%?)(.)", function(percent, letter)
+            if percent ~= "" or not letter:match("%a") then
+              return percent .. letter
+            else
+                return string.format("[%s%s]", letter:lower(), letter:upper())
+            end
+        end)
+        return p
+    end
     local tab = likwid.getEventsAndCounters()
     local events = {}
     local counters = {}
     local outstr = ""
     for _, eventTab in pairs(tab["Events"]) do
-        if eventTab["Name"]:match(print_event) then
+        if eventTab["Name"]:match(case_insensitive_pattern(print_event)) then
             table.insert(events, eventTab)
         end
     end
@@ -337,6 +359,8 @@ end
 num_avail_groups, avail_groups = likwid.get_groups()
 
 if print_groups == true then
+    print_stdout(string.format("%10s\t%s","Group name", "Description"))
+    print_stdout(likwid.hline)
     for i,g in pairs(avail_groups) do
         local gdata = likwid.get_groupdata(g)
         if gdata ~= nil then
@@ -396,6 +420,7 @@ end
 if print_info or verbose > 0 then
     print_stdout(string.format("CPU family:\t%u", cpuinfo["family"]))
     print_stdout(string.format("CPU model:\t%u", cpuinfo["model"]))
+    print_stdout(string.format("CPU short:\t%s", cpuinfo["short_name"]))
     print_stdout(string.format("CPU stepping:\t%u", cpuinfo["stepping"]))
     print_stdout(string.format("CPU features:\t%s", cpuinfo["features"]))
     P6_FAMILY = 6
@@ -420,18 +445,26 @@ if use_stethoscope == false and use_timeline == false and use_marker == false th
 end
 
 if use_wrapper and likwid.tablelength(arg)-2 == 0 and print_info == false then
-    print_stdout("No Executable can be found on commanlikwid.dline")
+    print_stdout("No Executable can be found on commandline")
     usage()
     likwid.putTopology()
     likwid.putConfiguration()
     os.exit(0)
 end
 
-if use_marker and not pin_cpus then
-    print_stdout("Warning: The Marker API requires the application to run on the selected CPUs.")
-    print_stdout("Warning: likwid-perfctr does not pin the application.")
-    print_stdout("Warning: LIKWID assumes that the application does it before the first instrumented code region is started.")
-    print_stdout("Warning: Otherwise, LIKWID throws a lot of errors and probably no results are printed.")
+if use_marker then
+    if likwid.access(markerFile, "rw") ~= -1 then
+        print_stdout(string.format("ERROR: MarkerAPI file %s not accessible. Maybe a remaining file of another user.", markerFile))
+        print_stdout("Please purge all MarkerAPI files from /tmp.")
+        os.exit(1)
+    end
+    if not pin_cpus then
+        print_stdout("Warning: The Marker API requires the application to run on the selected CPUs.")
+        print_stdout("Warning: likwid-perfctr pins the application only when using the -C command line option.")
+        print_stdout("Warning: LIKWID assumes that the application does it before the first instrumented code region is started.")
+        print_stdout("Warning: You can use the string in the environment variable LIKWID_THREADS to pin you application to")
+        print_stdout("Warning: to the CPUs specified after the -c command line option.")
+    end
 end
 
 if pin_cpus then
@@ -457,7 +490,7 @@ if pin_cpus then
             likwid.setenv("LIKWID_SILENT","true")
         end
         if os.getenv("CILK_NWORKERS") == nil then
-            likwid.setenv("CILK_NWORKERS", tostring(num_threads))
+            likwid.setenv("CILK_NWORKERS", tostring(num_cpus))
         end
         if skipString ~= "0x0" then
             likwid.setenv("LIKWID_SKIP",skipString)
@@ -499,6 +532,7 @@ if likwid.init(num_cpus, cpulist) < 0 then
     os.exit(1)
 end
 
+likwid.setenv("LIKWID_FORCE", tostring(forceOverwrite))
 for i, event_string in pairs(event_string_list) do
     if event_string:len() > 0 then
         local gid = likwid.addEventSet(event_string)
@@ -532,6 +566,7 @@ if use_marker == true then
     local str = table.concat(event_string_list, "|")
     likwid.setenv("LIKWID_EVENTS", str)
     likwid.setenv("LIKWID_THREADS", table.concat(cpulist,","))
+    likwid.setenv("LIKWID_FORCE", "-1")
 end
 
 execString = table.concat(arg," ",1, likwid.tablelength(arg)-2)
@@ -550,13 +585,25 @@ end
 if use_timeline == true then
     local cores_string = "CORES: "
     for i, cpu in pairs(cpulist) do
-        cores_string = cores_string .. tostring(cpu) .. " "
+        cores_string = cores_string .. tostring(cpu) .. "|"
     end
-    print_stdout(cores_string:sub(1,cores_string:len()-1))
+    io.stderr:write("# "..cores_string:sub(1,cores_string:len()-1).."\n")
+    for gid, group in pairs(group_list) do
+        local strlist = {}
+        if group["Metrics"] == nil then
+            for i,e in pairs(group["Events"]) do
+                table.insert(strlist, e["Event"])
+            end
+        else
+            for i,e in pairs(group["Metrics"]) do
+                table.insert(strlist, e["description"])
+            end
+        end
+        io.stderr:write("# "..table.concat(strlist, "|").."\n")
+    end
 end
 
 
-likwid.pinProcess(0, 1)
 
 io.stdout:flush()
 local int_results = {}
@@ -571,7 +618,12 @@ if use_wrapper or use_timeline then
     if use_wrapper and #group_ids == 1 then
         duration = 30.E06
     end
-    
+
+    local ret = likwid.startCounters()
+    if ret < 0 then
+        print_stdout(string.format("Error starting counters for cpu %d.",cpulist[ret * (-1)]))
+        os.exit(1)
+    end
 
     local pid = nil
     if pin_cpus then
@@ -579,18 +631,9 @@ if use_wrapper or use_timeline then
     else
         pid = likwid.startProgram(execString, 0, cpulist)
     end
+
     if not pid then
         print_stdout("Failed to execute command: ".. execString)
-        likwid.stopCounters()
-        likwid.finalize()
-        likwid.putTopology()
-        likwid.putConfiguration()
-        os.exit(1)
-    end
-    local ret = likwid.startCounters()
-    if ret < 0 then
-        print_stdout(string.format("Error starting counters for cpu %d.",cpulist[ret * (-1)]))
-        os.exit(1)
     end
     lastmetrics = {}
     while true do
@@ -605,7 +648,8 @@ if use_wrapper or use_timeline then
         end
         if use_timeline == true then
             stop = likwid.stopClock()
-            likwid.readCounters()
+            --likwid.readCounters()
+            likwid.stopCounters()
             local time = likwid.getClock(start, stop)
             lastresults = int_results[alltime]
             
@@ -650,7 +694,8 @@ if use_wrapper or use_timeline then
                             local formula = group_list[activeGroup]["Metrics"][m]["formula"]
                             local result = likwid.calculate_metric(formula,counterlist)
 
-                            if lastmetrics[activeGroup][m][t] ~= nil and m > 4 and #group_ids > 1 then
+                            if lastmetrics[activeGroup][m][t] ~= nil and
+                               #group_ids > 1 then
                                 str = str .. "," .. tostring(result - lastmetrics[activeGroup][m][t])
                             else
                                 str = str .. "," .. tostring(result)
@@ -662,6 +707,9 @@ if use_wrapper or use_timeline then
                 end
             end
             firstrun = false
+            likwid.startCounters()
+        else
+            likwid.readCounters()
         end
         if #group_ids > 1 then
             likwid.switchGroup(activeGroup + 1)
@@ -687,11 +735,6 @@ elseif use_marker then
     local ret = os.execute(execString)
     if ret == nil then
         print_stdout("Failed to execute command: ".. execString)
-        likwid.stopCounters()
-        likwid.finalize()
-        likwid.putTopology()
-        likwid.putConfiguration()
-        os.exit(1)
     end
 end
 
@@ -710,16 +753,16 @@ end
 
 
 if use_marker == true then
-    groups, results = likwid.getMarkerResults(markerFile, group_list, num_cpus)
+    groups, results = likwid.getMarkerResults(markerFile, group_list, cpulist)
+    os.remove(markerFile)
     if #groups == 0 and #results == 0 then
         likwid.finalize()
         likwid.putTopology()
         likwid.putConfiguration()
         os.exit(1)
     end
-    os.remove(markerFile)
     likwid.print_markerOutput(groups, results, group_list, cpulist)
-else
+elseif use_timeline == false then
     results = likwid.getResults()
     for g,gr in pairs(group_list) do
         gr["runtime"] = likwid.getRuntimeOfGroup(g)
@@ -728,10 +771,15 @@ else
 end
 
 if outfile then
-    local suffix = string.match(outfile, ".-[^\\/]-%.?([^%.\\/]*)$")
+    local suffix = ""
+    if string.match(outfile,"%.") then
+        suffix = string.match(outfile, ".-[^\\/]-%.?([^%.\\/]*)$")
+    end
     local command = "<INSTALLED_PREFIX>/share/likwid/filter/" .. suffix
-    local tmpfile = outfile:gsub("."..suffix,".tmp",1)
-    if suffix ~= "csv" and likwid.access(command, "x") then
+    local tmpfile = outfile..".tmp"
+    if suffix == "" then
+        os.rename(tmpfile, outfile)
+    elseif suffix ~= "txt" and suffix ~= "csv" and likwid.access(command, "x") then
         print_stdout("Cannot find filter script, save output in CSV format to file "..outfile)
         os.rename(tmpfile, outfile)
     else

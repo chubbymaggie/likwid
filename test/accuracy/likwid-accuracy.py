@@ -28,14 +28,16 @@ resultfolder = "RESULTS"
 hostname = socket.gethostname()
 picture_base = ".."
 topology_outputfile = "topology.dat"
+nrThreads = 1
 
 gnu_colors = ["red","blue","green","black"]#,"brown", "gray","violet", "cyan", "magenta","orange","#4B0082","#800000","turquoise","#006400","yellow"]
 gnu_marks = [5,13,9,2]#,3,4,6,7,8,9,10,11,12,14,15]
 
-units = { "L2" : "MByte/s", "L3" : "MByte/s", "MEM" : "MByte/s",
+units = { "L2" : "MByte/s", "L3" : "MByte/s", "MEM" : "MByte/s", "HA" : "MByte/s",
           "FLOPS_SP" : "MFLOP/s", "FLOPS_DP" : "MFLOP/s", "FLOPS_AVX" : "MFLOP/s",
-          "DATA": "Load/Store ratio", "BRANCH" : "Instructions per branch"}
-
+          "DATA": "Load/Store ratio", "BRANCH" : "Instructions per branch",
+          "CLOCK" : "Instructions", "UOPS" : "UOPs"}
+translate_group = {"CLOCK" : "INST_RETIRED_ANY", "UOPS" : "UOPS_RETIRED_ANY"}
 
 wiki = False
 papi = False
@@ -52,7 +54,7 @@ corrected_set = {}
 marker_set = {}
 papi_set = {}
 
-if not os.path.exists(bench_plain) or not os.path.exists(bench_marker):
+if not os.path.exists(bench_marker):
     print "Please run make before using likwid-accuracy.py"
     sys.exit(1)
 if not os.path.exists(perfctr):
@@ -67,6 +69,7 @@ def usage():
     print "-s/--sets:\tSpecifiy testgroups (comma separated). Can also be set in SET.txt"
 #    print "--wiki:\t\tBesides testing write out results in Google code wiki syntax"
 #    print "--only_wiki:\tDo not run benchmarks, read results from file and write out results in Google code wiki syntax"
+    print "-c <nrThreads>:\tSet number of threads. The accuracy tool uses the E notation of likwid like E:N:<nrThreads>:1:2. Default is 1 thread."
     print "Picture options:"
     print "--pgf:\t\tCreate TeX document for each test with PGFPlot"
     print "--gnuplot:\tCreate GNUPlot script for each test"
@@ -98,7 +101,7 @@ def get_test_groups(groupdict):
         setfp = open("SET.txt",'r')
         setlist = setfp.read().strip().split("\n")
         setfp.close()
-    
+
     filelist = glob.glob(testfolder+"/*.txt")
     for name in setlist:
         if name in get_groups():
@@ -112,8 +115,8 @@ def get_test_groups(groupdict):
                 if line.startswith("TEST"):
                     tests.append(line.split(" ")[1])
             groups[name] = tests
-                
-            
+
+
     return groups
 
 def write_topology(path):
@@ -128,6 +131,11 @@ def write_topology(path):
         return
     f.write(p.stdout.read())
     f.close()
+
+def approx(in1, in2):
+    if in1 > (0.95*in2) or in1 < (1.05*in2):
+        return 1
+    return 0
 
 def legend(file1, file2):
     input1 = []
@@ -156,11 +164,16 @@ def legend(file1, file2):
         return "no"
     elif float(numbers1[0]) < float(numbers1[-1]) and float(numbers2[0]) < float(numbers2[-1]):
         return "so"
+    elif approx(float(numbers1[0]), float(numbers1[-1])) and approx(float(numbers2[0]), float(numbers2[-1])):
+        return "so"
     return "no"
 
 
 def write_pgf(group, test, plain_file, marker_file, scale=0.0,papi_file=None, execute=False, script=None):
-    filename = os.path.join(os.path.join(resultfolder,hostname),group+"_"+test+".tex")
+    printgrp = group
+    if translate_group.has_key(group):
+        printgrp = translate_group[group]
+    filename = os.path.join(os.path.join(resultfolder,hostname),printgrp+"_"+test+".tex")
     sizelist = []
     sizeindex = []
     lentry = "north east"
@@ -175,7 +188,7 @@ def write_pgf(group, test, plain_file, marker_file, scale=0.0,papi_file=None, ex
     fp.write("\\begin{document}\n")
     fp.write("% cut from here\n")
     fp.write("\\begin{tikzpicture}\n")
-    fp.write("\\begin{axis}[xmin=0,xmax=%d,xlabel={Size - %d runs each}, ylabel={%s},title={Group %s - Test %s},legend pos=%s,xtick=data,width=.75\\textwidth,xticklabels={%s},xtick={%s}]\n" % (test_set[group][test]["RUNS"]*len(test_set[group][test]["variants"]),test_set[group][test]["RUNS"],units[group],group.replace("_","\_"),test.replace("_","\_"),lentry,",".join(sizelist),",".join(sizeindex)))
+    fp.write("\\begin{axis}[xmin=0,xmax=%d,xlabel={Size - %d runs each}, ylabel={%s},title={Group %s - Test %s},legend pos=%s,xtick=data,width=.75\\textwidth,xticklabels={%s},xtick={%s}]\n" % (test_set[group][test]["RUNS"]*len(test_set[group][test]["variants"]),test_set[group][test]["RUNS"],units[group],printgrp.replace("_","\_"),test.replace("_","\_"),lentry,",".join(sizelist),",".join(sizeindex)))
     fp.write("\\addplot+[red,mark=square*,mark options={draw=red, fill=red}] table {%s};\n" % (os.path.basename(plain_file),))
     fp.write("\\addlegendentry{bench};\n")
     if scale > 0.0:
@@ -201,19 +214,23 @@ def write_pgf(group, test, plain_file, marker_file, scale=0.0,papi_file=None, ex
     if script:
         script.write("pdflatex %s\n" % (os.path.basename(filename),))
     return filename
-    
-def write_gnuplot(group, test, plain_file, marker_file, scale = 0.0, papi_file=None, execute=False, script=None):
-    filename = os.path.join(os.path.join(resultfolder,hostname),group+"_"+test+".plot")
+
+def write_gnuplot(group, test, plain_file, marker_file, scale = 1.0, papi_file=None, execute=False, script=None):
+    printgrp = group
+    if translate_group.has_key(group):
+        printgrp = translate_group[group]
+    filename = os.path.join(os.path.join(resultfolder,hostname),printgrp+"_"+test+".plot")
     fp = open(filename,'w')
     for i,color in enumerate(gnu_colors):
         fp.write("set style line %d linetype 1 linecolor rgb '%s' lw 2 pt %s\n" % (i+1, color,gnu_marks[i]))
     fp.write("set terminal jpeg\n")
-    fp.write("set title 'Group %s - Test %s'\n" % (group, test,))
+    fp.write("set encoding utf8\n")
+    fp.write("set title 'Group %s - Test %s'\n" % (printgrp, test,))
     if legend(plain_file, marker_file) == "no":
         fp.write("set key top right\n")
     else:
         fp.write("set key bottom right\n")
-    fp.write("set output '%s'\n" % (os.path.basename(os.path.join(os.path.join(resultfolder,hostname),group+"_"+test+".jpg")),))
+    fp.write("set output '%s'\n" % (os.path.basename(os.path.join(os.path.join(resultfolder,hostname),printgrp+"_"+test+".jpg")),))
     fp.write("set xlabel 'Size - %d runs each'\n" % (test_set[group][test]["RUNS"],))
     fp.write("set ylabel '%s'\n" % (units[group],))
     fp.write("set yrange  [0:]\n")
@@ -242,9 +259,12 @@ def write_gnuplot(group, test, plain_file, marker_file, scale = 0.0, papi_file=N
     return filename
 
 def write_grace(group, test, plain_file, correct_file, marker_file, papi_file=None, execute=False, script=None):
-    filename = os.path.join(os.path.join(resultfolder,hostname),group+"_"+test+".bat")
-    agrname = os.path.join(os.path.join(resultfolder,hostname),group+"_"+test+".agr")
-    pngname = os.path.join(os.path.join(resultfolder,hostname),group+"_"+test+".png")
+    printgrp = group
+    if translate_group.has_key(group):
+        printgrp = translate_group[group]
+    filename = os.path.join(os.path.join(resultfolder,hostname),printgrp+"_"+test+".bat")
+    agrname = os.path.join(os.path.join(resultfolder,hostname),printgrp+"_"+test+".agr")
+    pngname = os.path.join(os.path.join(resultfolder,hostname),printgrp+"_"+test+".png")
     if execute or script:
         plain_file = os.path.basename(plain_file)
         marker_file = os.path.basename(marker_file)
@@ -258,7 +278,7 @@ def write_grace(group, test, plain_file, correct_file, marker_file, papi_file=No
     out_options = "-hdevice PNG -printfile %s " % (pngname,)
     out_options += "-saveall %s" % (agrname,)
     fp = open(filename,'w')
-    fp.write("title \"Group %s - Test %s\"\n" % (group, test,))
+    fp.write("title \"Group %s - Test %s\"\n" % (printgrp, test,))
     fp.write("xaxis label \"Run\"\n")
     fp.write("xaxis label char size 1.2\n")
     fp.write("xaxis ticklabel char size 1.2\n" % (units[group],))
@@ -341,7 +361,7 @@ def write_grace(group, test, plain_file, correct_file, marker_file, papi_file=No
 
 
 try:
-    opts, args = getopt.getopt(sys.argv[1:], "hs:", ["help", "sets=","script","scriptname=","wiki","only_wiki=","pgf","gnuplot","grace","papi"])
+    opts, args = getopt.getopt(sys.argv[1:], "hs:c:", ["help", "sets=","script","scriptname=","wiki","only_wiki=","pgf","gnuplot","grace","papi"])
 except getopt.GetoptError as err:
     print str(err)
     usage()
@@ -362,6 +382,12 @@ for o, a in opts:
         hostname = a
     if o == "--papi":
         papi = True
+    if o == "-c":
+        try:
+            nrThreads = int(a)
+        except:
+            print "Argument to -c not valid. Must be a number"
+            sys.exit(1)
     if o == "--pgf":
         out_pgf = True
     if o == "--gnuplot":
@@ -392,45 +418,55 @@ if len(sets) == 0:
     fp.close()
 for line in sets:
     if not line.strip() or line.startswith("#"): continue
-    if os.path.exists("%s/%s.txt" % (testfolder,line.strip(),)):
-        test_set[line.strip()] = {}
-        plain_set[line.strip()] = {}
-        corrected_set[line.strip()] = {}
-        marker_set[line.strip()] = {}
-        papi_set[line.strip()] = {}
-        testfp = open("%s/%s.txt" % (testfolder,line.strip(),),'r')
+    filename = "%s/%s.txt" % (testfolder,line.strip(),)
+    if os.path.exists(filename):
+        groupname = line.strip()
+        testfp = open(filename,'r')
+        for line in testfp.read().split("\n"):
+            if line.startswith("GROUP"):
+                match = re.match("^GROUP\s+(\.+)")
+                if match:
+                    groupname = match.group(1)
+                    break
+        testfp.close()
+        test_set[groupname] = {}
+        plain_set[groupname] = {}
+        corrected_set[groupname] = {}
+        marker_set[groupname] = {}
+        papi_set[groupname] = {}
+        testfp = open(filename,'r')
         test = None
         for i,testline in enumerate(testfp.read().split("\n")):
             if test and not testline.strip(): test = None
             if testline.startswith("REGEX_BENCH"):
-                test_set[line.strip()]["REGEX_BENCH"] = re.compile(" ".join(testline.split(" ")[1:]))
+                test_set[groupname]["REGEX_BENCH"] = re.compile(" ".join(testline.split(" ")[1:]))
             if testline.startswith("REGEX_PERF"):
-                test_set[line.strip()]["REGEX_PERF"] = re.compile(" ".join(testline.split(" ")[1:]))
+                test_set[groupname]["REGEX_PERF"] = re.compile(" ".join(testline.split(" ")[1:]))
             if testline.startswith("REGEX_PAPI"):
-                test_set[line.strip()]["REGEX_PAPI"] = re.compile(" ".join(testline.split(" ")[1:]))
+                test_set[groupname]["REGEX_PAPI"] = re.compile(" ".join(testline.split(" ")[1:]))
             if testline.startswith("TEST"):
                 test = testline.split(" ")[1]
-                test_set[line.strip()][test] = {}
-                test_set[line.strip()][test]["WA_FACTOR"] = 0.0
-                plain_set[line.strip()][test] = {}
-                corrected_set[line.strip()][test] = {}
-                marker_set[line.strip()][test] = {}
-                papi_set[line.strip()][test] = {}
+                test_set[groupname][test] = {}
+                test_set[groupname][test]["WA_FACTOR"] = 0.0
+                plain_set[groupname][test] = {}
+                corrected_set[groupname][test] = {}
+                marker_set[groupname][test] = {}
+                papi_set[groupname][test] = {}
             if testline.startswith("RUNS") and test:
-                test_set[line.strip()][test]["RUNS"] = int(testline.split(" ")[1])
+                test_set[groupname][test]["RUNS"] = int(testline.split(" ")[1])
             if testline.startswith("WA_FACTOR") and test:
-                test_set[line.strip()][test]["WA_FACTOR"] = float(testline.split(" ")[1])
+                test_set[groupname][test]["WA_FACTOR"] = float(testline.split(" ")[1])
             if testline.startswith("VARIANT") and test:
                 linelist = re.split("\s+",testline);
                 variant = linelist[1]
-                if not test_set[line.strip()][test].has_key("variants"):
-                    test_set[line.strip()][test]["variants"] = []
-                test_set[line.strip()][test][variant] = linelist[2]
-                test_set[line.strip()][test]["variants"].append(linelist[1])
-                plain_set[line.strip()][test][variant] = []
-                corrected_set[line.strip()][test][variant] = []
-                marker_set[line.strip()][test][variant] = []
-                papi_set[line.strip()][test][variant] = []
+                if not test_set[groupname][test].has_key("variants"):
+                    test_set[groupname][test]["variants"] = []
+                test_set[groupname][test][variant] = linelist[2]
+                test_set[groupname][test]["variants"].append(linelist[1])
+                plain_set[groupname][test][variant] = []
+                corrected_set[groupname][test][variant] = []
+                marker_set[groupname][test][variant] = []
+                papi_set[groupname][test][variant] = []
         testfp.close()
 
 
@@ -450,7 +486,7 @@ if not only_wiki:
     script.write("#!/bin/bash\n")
 
     for group in test_set.keys():
-        perfctr_string = "%s -C S0:0 -g %s -m " % (perfctr,group,)
+        perfctr_string = "%s -C E:N:%d:1:2 -g %s -m " % (perfctr,nrThreads, group,)
         no_scale = False
         for test in test_set[group].keys():
             if test.startswith("REGEX"): continue
@@ -476,7 +512,7 @@ if not only_wiki:
             for size in test_set[group][test]["variants"]:
                 if size.startswith("RUNS"): continue
                 print "Size "+size+": ",
-                bench_options = "-t %s -w S0:%s:1" % (test, size,)
+                bench_options = "-t %s -w N:%s:%d" % (test, size, nrThreads)
                 for i in range(0,test_set[group][test]["RUNS"]):
                     print "*",
                     sys.stdout.flush()

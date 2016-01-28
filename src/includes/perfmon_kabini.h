@@ -78,8 +78,12 @@ int k16_pmc_setup(int cpu_id, RegisterIndex index, PerfmonEvent* event)
             }
         }
     }
-    VERBOSEPRINTREG(cpu_id, counter_map[index].configRegister, LLU_CAST flags, SETUP_PMC);
-    CHECK_MSR_WRITE_ERROR(HPMwrite(cpu_id, MSR_DEV, counter_map[index].configRegister, flags));
+    if (flags != currentConfig[cpu_id][index])
+    {
+        VERBOSEPRINTREG(cpu_id, counter_map[index].configRegister, LLU_CAST flags, SETUP_PMC);
+        CHECK_MSR_WRITE_ERROR(HPMwrite(cpu_id, MSR_DEV, counter_map[index].configRegister, flags));
+        currentConfig[cpu_id][index] = flags;
+    }
     return 0;
 }
 
@@ -93,9 +97,12 @@ int k16_uncore_setup(int cpu_id, RegisterIndex index, PerfmonEvent* event)
     }
 
     flags |= ((uint64_t)(event->eventId>>8)<<32) + (event->umask<<8) + (event->eventId & ~(0xF00U));
-
-    VERBOSEPRINTREG(cpu_id, counter_map[index].configRegister, LLU_CAST flags, SETUP_UNCORE);
-    CHECK_MSR_WRITE_ERROR(HPMwrite(cpu_id, MSR_DEV, counter_map[index].configRegister, flags));
+    if (flags != currentConfig[cpu_id][index])
+    {
+        VERBOSEPRINTREG(cpu_id, counter_map[index].configRegister, LLU_CAST flags, SETUP_UNCORE);
+        CHECK_MSR_WRITE_ERROR(HPMwrite(cpu_id, MSR_DEV, counter_map[index].configRegister, flags));
+        currentConfig[cpu_id][index] = flags;
+    }
     return 0;
 }
 
@@ -135,8 +142,12 @@ int k16_cache_setup(int cpu_id, RegisterIndex index, PerfmonEvent* event)
             }
         }
     }
-    VERBOSEPRINTREG(cpu_id, counter_map[index].configRegister, LLU_CAST flags, SETUP_CBOX);
-    CHECK_MSR_WRITE_ERROR(HPMwrite(cpu_id, MSR_DEV, counter_map[index].configRegister, flags));
+    if (flags != currentConfig[cpu_id][index])
+    {
+        VERBOSEPRINTREG(cpu_id, counter_map[index].configRegister, LLU_CAST flags, SETUP_CBOX);
+        CHECK_MSR_WRITE_ERROR(HPMwrite(cpu_id, MSR_DEV, counter_map[index].configRegister, flags));
+        currentConfig[cpu_id][index] = flags;
+    }
     return 0;
 }
 
@@ -201,7 +212,9 @@ int perfmon_startCountersThread_kabini(int thread_id, PerfmonEventSet* eventSet)
             RegisterIndex index = eventSet->events[i].index;
             uint32_t reg = counter_map[index].configRegister;
             uint32_t counter = counter_map[index].counterRegister;
-
+            eventSet->events[i].threadCounter[thread_id].startData = 0;
+            eventSet->events[i].threadCounter[thread_id].counterData = 0;
+            eventSet->events[i].threadCounter[thread_id].fullData = 0;
             if ((type == PMC) ||
                 ((type == UNCORE) && (haveSLock)) ||
                 ((type == CBOX0) && (haveTLock)))

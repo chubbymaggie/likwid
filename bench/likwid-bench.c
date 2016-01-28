@@ -161,6 +161,11 @@ int main(int argc, char** argv)
                 break;
             case 'i':
                 demandIter = strtoul(optarg, NULL, 10);
+                if (demandIter <= 0)
+                {
+                    fprintf (stderr, "Error: Iterations must be greater than 0\n");
+                    return EXIT_FAILURE;
+                }
                 break;
             case 'l':
                 bdestroy(testcase);
@@ -174,7 +179,7 @@ int main(int argc, char** argv)
                     }
                 }
 
-                if (biseqcstr(testcase,"none"))
+                if (test == NULL)
                 {
                     fprintf (stderr, "Error: Unknown test case %s\n",optarg);
                     return EXIT_FAILURE;
@@ -194,6 +199,26 @@ int main(int argc, char** argv)
                         case DOUBLE:
                             ownprintf("Data Type: Double precision float\n");
                             break;
+                    }
+                    if (test->loads >= 0)
+                    {
+                        ownprintf("Load Ops: %d\n",test->loads);
+                    }
+                    if (test->stores >= 0)
+                    {
+                        ownprintf("Store Ops: %d\n",test->stores);
+                    }
+                    if (test->branches >= 0)
+                    {
+                        ownprintf("Branches: %d\n",test->branches);
+                    }
+                    if (test->instr_const >= 0)
+                    {
+                        ownprintf("Constant instructions: %d\n",test->instr_const);
+                    }
+                    if (test->instr_loop >= 0)
+                    {
+                        ownprintf("Loop instructions: %d\n",test->instr_loop);
                     }
                 }
                 bdestroy(testcase);
@@ -221,7 +246,7 @@ int main(int argc, char** argv)
                     }
                 }
 
-                if (biseqcstr(testcase,"none"))
+                if (test == NULL)
                 {
                     fprintf (stderr, "Error: Unknown test case %s\n",optarg);
                     return EXIT_FAILURE;
@@ -251,13 +276,17 @@ int main(int argc, char** argv)
         fprintf(stderr, "Error: Unsupported processor!\n");
         exit(EXIT_FAILURE);
     }
+
+    if ((test == NULL) && (!optPrintDomains))
+    {
+        fprintf(stderr, "Unknown test case. Please check likwid-bench -a for available tests\n");
+        fprintf(stderr, "and select one using the -t commandline option\n");
+        exit(EXIT_FAILURE);
+    }
+
     numa_init();
     affinity_init();
     timer_init();
-
-    allocator_init(numberOfWorkgroups * MAX_STREAMS);
-    groups = (Workgroup*) malloc(numberOfWorkgroups*sizeof(Workgroup));
-    tmp = 0;
 
     if (optPrintDomains)
     {
@@ -277,6 +306,10 @@ int main(int argc, char** argv)
         exit (EXIT_SUCCESS);
     }
 
+    allocator_init(numberOfWorkgroups * MAX_STREAMS);
+    groups = (Workgroup*) malloc(numberOfWorkgroups*sizeof(Workgroup));
+    tmp = 0;
+
     optind = 0;
     while ((c = getopt (argc, argv, "w:t:s:l:i:aphv")) != -1)
     {
@@ -284,24 +317,31 @@ int main(int argc, char** argv)
         {
             case 'w':
                 currentWorkgroup = groups+tmp;
-                testcase = bfromcstr(optarg);
-                bstr_to_workgroup(currentWorkgroup, testcase, test->type, test->streams);
-                bdestroy(testcase);
-                for (i=0; i<  test->streams; i++)
+                bstring groupstr = bfromcstr(optarg);
+                i = bstr_to_workgroup(currentWorkgroup, groupstr, test->type, test->streams);
+                bdestroy(groupstr);
+                if (i == 0)
                 {
-                    if (currentWorkgroup->streams[i].offset%test->stride)
+                    for (i=0; i<  test->streams; i++)
                     {
-                        fprintf (stderr, "Error: Stream %d: offset is not a multiple of stride!\n",i);
-                        return EXIT_FAILURE;
+                        if (currentWorkgroup->streams[i].offset%test->stride)
+                        {
+                            fprintf (stderr, "Error: Stream %d: offset is not a multiple of stride!\n",i);
+                            return EXIT_FAILURE;
+                        }
+                        allocator_allocateVector(&(currentWorkgroup->streams[i].ptr),
+                                PAGE_ALIGNMENT,
+                                currentWorkgroup->size,
+                                currentWorkgroup->streams[i].offset,
+                                test->type,
+                                currentWorkgroup->streams[i].domain);
                     }
-                    allocator_allocateVector(&(currentWorkgroup->streams[i].ptr),
-                            PAGE_ALIGNMENT,
-                            currentWorkgroup->size,
-                            currentWorkgroup->streams[i].offset,
-                            test->type,
-                            currentWorkgroup->streams[i].domain);
+                    tmp++;
                 }
-                tmp++;
+                else
+                {
+                    exit(EXIT_FAILURE);
+                }
                 break;
             default:
                 continue;
@@ -354,6 +394,7 @@ int main(int argc, char** argv)
         myData.min_runtime = min_runtime;
         myData.size = groups[i].size;
         myData.test = test;
+        myData.cycles = 0;
         myData.numberOfThreads = groups[i].numberOfThreads;
         myData.processors = (int*) malloc(myData.numberOfThreads * sizeof(int));
         myData.streams = (void**) malloc(test->streams * sizeof(void*));
@@ -411,11 +452,13 @@ int main(int argc, char** argv)
     ownprintf("Time:\t\t\t%e sec\n", time);
     ownprintf("Iterations:\t\t%" PRIu64 "\n", realIter);
     ownprintf("Iterations per thread:\t%" PRIu64 "\n",threads_data[0].data.iter);
+    ownprintf("Inner loop executions:\t%.0f\n", ((double)realSize)/((double)test->stride));
     ownprintf("Size:\t\t\t%" PRIu64 "\n",  realSize*test->bytes );
     ownprintf("Size per thread:\t%" PRIu64 "\n", threads_data[0].data.size*test->bytes);
     ownprintf("Number of Flops:\t%" PRIu64 "\n", (threads_data[0].data.iter * realSize *  test->flops));
     ownprintf("MFlops/s:\t\t%.2f\n",
             1.0E-06 * ((double) threads_data[0].data.iter * realSize *  test->flops/  time));
+    
     ownprintf("Data volume (Byte):\t%llu\n", LLU_CAST (threads_data[0].data.iter * realSize *  test->bytes));
     ownprintf("MByte/s:\t\t%.2f\n",
             1.0E-06 * ( (double) threads_data[0].data.iter * realSize *  test->bytes/ time));
@@ -431,6 +474,20 @@ int main(int argc, char** argv)
         case DOUBLE:
             ownprintf("Cycles per cacheline:\t%f\n", (8.0 * cycPerUp));
             break;
+    }
+    ownprintf("Loads per update:\t%" PRIu64 "\n", test->loads );
+    ownprintf("Stores per update:\t%" PRIu64 "\n", test->stores );
+    if ((test->loads > 0) && (test->stores > 0))
+    {
+        ownprintf("Load/store ratio:\t%.2f\n", ((double)test->loads)/((double)test->stores) );
+    }
+    if ((test->instr_loop > 0) && (test->instr_const > 0))
+    {
+        ownprintf("Instructions:\t\t%" PRIu64 "\n", LLU_CAST ((double)realSize/test->stride)*test->instr_loop*threads_data[0].data.iter + test->instr_const );
+    }
+    if (test->uops > 0)
+    {
+        ownprintf("UOPs:\t\t\t%" PRIu64 "\n", LLU_CAST ((double)realSize/test->stride)*test->uops*threads_data[0].data.iter);
     }
 
     ownprintf(bdata(HLINE));

@@ -100,6 +100,27 @@ likwid.checkProgram = likwid_checkProgram
 likwid.killProgram = likwid_killProgram
 likwid.catchSignal = likwid_catchSignal
 likwid.getSignalState = likwid_getSignalState
+likwid.cpustr_to_cpulist = likwid_cpustr_to_cpulist
+likwid.nodestr_to_nodelist = likwid_nodestr_to_nodelist
+likwid.sockstr_to_socklist = likwid_sockstr_to_socklist
+likwid.markerInit = likwid_markerInit
+likwid.markerThreadInit = likwid_markerThreadInit
+likwid.markerClose = likwid_markerClose
+likwid.markerNextGroup = likwid_markerNextGroup
+likwid.registerRegion = likwid_registerRegion
+likwid.startRegion = likwid_startRegion
+likwid.stopRegion = likwid_stopRegion
+likwid.getRegion = likwid_getRegion
+likwid.initCpuFeatures = likwid_cpuFeaturesInit
+likwid.getCpuFeatures = likwid_cpuFeaturesGet
+likwid.enableCpuFeatures = likwid_cpuFeaturesEnable
+likwid.disableCpuFeatures = likwid_cpuFeaturesDisable
+
+likwid.cpuFeatures = { [0]="HW_PREFETCHER", [1]="CL_PREFETCHER", [2]="DCU_PREFETCHER", [3]="IP_PREFETCHER",
+                        [4]="FAST_STRINGS", [5]="THERMAL_CONTROL", [6]="PERF_MON", [7]="FERR_MULTIPLEX",
+                        [8]="BRANCH_TRACE_STORAGE", [9]="XTPR_MESSAGE", [10]="PEBS", [11]="SPEEDSTEP",
+                        [12]="MONITOR", [13]="SPEEDSTEP_LOCK", [14]="CPUID_MAX_VAL", [15]="XD_BIT",
+                        [16]="DYN_ACCEL", [17]="TURBO_MODE", [18]="TM2" }
 
 infinity = math.huge
 
@@ -167,7 +188,7 @@ local function getopt(args, ostrlist)
                 if #args == 0 then -- an option requiring argument is the last one
                     place = 0
                     if givopt:sub(placeend, placeend) == ':' then return ':' end
-                    return '?', optopt
+                    return '!', optopt
                 else arg = args[1] end
             end
             table.remove(args, 1)
@@ -401,352 +422,28 @@ end
 
 likwid.stringsplit = stringsplit
 
-local function cpulist_sort(cpulist)
-    local newlist = {}
-    if #cpulist == 0 then
-        return newlist
-    end
-    local topo = likwid_getCpuTopology()
-    for offset=1,topo["numThreadsPerCore"] do
-        for i=0, #cpulist/topo["numThreadsPerCore"] do
-            table.insert(newlist, cpulist[(i*topo["numThreadsPerCore"])+offset])
-        end
-    end
-    return newlist
-end
-
-local function cpulist_concat(cpulist, addlist)
-    for i, add in pairs(addlist) do
-        table.insert(cpulist, add)
-    end
-    return cpulist
-end
-
-local function cpustr_valid(cpustr)
-    invalidlist = {"%.", "_", ";", "!", "§", "%$", "%%", "%&", "/", "\\",  "%(","%)","=", "?","`","´" ,"~","°","|","%^","<",">", "{","}","%[","%]","#","\'","\"", "*"}
-    for i, inval in pairs(invalidlist) do
-        local s,e = cpustr:find(inval)
-        if s ~= nil then
-            return false
-        end
-    end
-    return true
-end
-
-local function cpustr_to_cpulist_scatter(cpustr)
-    local cpulist = {}
-    local domain_list = {}
-    local domain_cpus = {}
-    if not cpustr_valid(cpustr) then
-        print("ERROR: Expression contains invalid characters")
-        return {}
-    end
-    local s,e = cpustr:find(":")
-    if s ~= nil then
-        local domain = cpustr:sub(1,s-1)
-        local expression = cpustr:sub(s+1,cpustr:len())
-        local affinity = likwid_getAffinityInfo()
-        local topo = likwid_getCpuTopology()
-
-        for dom,content in pairs(affinity["domains"]) do
-            s,e = content["tag"]:find(domain)
-            if s ~= nil then 
-                table.insert(domain_list, dom)
-                table.insert(domain_cpus, cpulist_sort(affinity["domains"][dom]["processorList"]))
-            end
-        end
-
-        local num_domains = tablelength(domain_list)
-        local domain_idx = 1
-        local threadID = 1
-        -- Adding physical cores
-        for i=1,topo["activeHWThreads"]/num_domains do
-            for idx, _ in pairs(domain_list) do
-                table.insert(cpulist, domain_cpus[idx][i])
-            end
-        end
-    else
-        print("ERROR: Cannot parse scatter expression, should look something like <domain>:scatter")
-        return {}
-    end
-    return cpulist
-end
-
-
-local function cpustr_to_cpulist_expression(cpustr)
-    local cpulist = {}
-    if not cpustr_valid(cpustr) then
-        print("ERROR: Expression contains invalid characters")
-        return {}
-    end
-    local affinity = likwid_getAffinityInfo()
-    local exprlist = stringsplit(cpustr, ":")
-    table.remove(exprlist, 1)
-    local domain = 0
-
-    local tag = "X"
-    local count = 0
-    local chunk = 1
-    local stride = 1
-
-    if #exprlist == 2 then
-        tag = exprlist[1]
-        count = tonumber(exprlist[2])
-    elseif #exprlist == 4 then
-        tag = exprlist[1]
-        count = tonumber(exprlist[2])
-        chunk = tonumber(exprlist[3])
-        stride = tonumber(exprlist[4])
-    end
-    if tag == "X" or count == nil or chunk == nil or stride == nil then
-        print("ERROR: Invalid expression, cannot parse all needed values")
-        return {}
-    end
-    for domidx, domcontent in pairs(affinity["domains"]) do
-        if domcontent["tag"] == tag then
-            domain = domidx
-            break
-        end
-    end
-    if domain == 0 then
-        print(string.format("ERROR: Invalid affinity domain %s", tag))
-        return {}
-    end
-
-    index = 1
-    selected = 0
-    for i=1,count do
-        for j=0, chunk-1 do
-            table.insert(cpulist, affinity["domains"][domain]["processorList"][index+j])
-            selected = selected+1
-            if (selected >= count) then break end
-        end
-        index = index + stride
-        if (index > affinity["domains"][domain]["numberOfProcessors"]) then
-            index = 1
-        end
-        if (selected >= count) then break end
-    end
-    return cpulist
-end
-
-
-local function cpustr_to_cpulist_logical(cpustr)
-    local cpulist = {}
-    local sorted_list = {}
-    if not cpustr_valid(cpustr) then
-        print("ERROR: Expression contains invalid characters")
-        return {}
-    end
-    local affinity = likwid_getAffinityInfo()
-    local exprlist = stringsplit(cpustr, ":")
-    table.remove(exprlist, 1)
-    local domain = 0
-    if #exprlist ~= 2 then
-        print("ERROR: Invalid expression, should look like L:<domain>:<indexlist> or be in a cpuset")
-        return {}
-    end
-    local tag = exprlist[1]
-    local indexstr = exprlist[2]
-    for domidx, domcontent in pairs(affinity["domains"]) do
-        if domcontent["tag"] == tag then
-            domain = domidx
-            break
-        end
-    end
-    if domain == 0 then
-        print(string.format("ERROR: Invalid affinity domain %s", tag))
-        return {}
-    end
-    sorted_list = cpulist_sort(affinity["domains"][domain]["processorList"])
-
-    indexlist = stringsplit(indexstr, ",")
-    for i, item in pairs(indexlist) do
-        local s,e = item:find("-")
-        if s == nil then
-            local index = tonumber(item)+1
-            if index > affinity["domains"][domain]["numberOfProcessors"] then
-                print(string.format("CPU index %s larger than number of processors in affinity group %s", item, tag))
-                return {}
-            end
-            table.insert(cpulist, sorted_list[index])
-        else
-            start, ende = item:match("(%d*)-(%d*)")
-            start = start + 1
-            ende = ende + 1
-            if tonumber(start) == nil then
-                print("ERROR: CPU indices smaller than 0 are not allowed")
-                return {}
-            end
-            if tonumber(start) > tonumber(ende) then
-                print(string.format("ERROR: CPU list %s invalid, start %s is larger than end %s", item, start, ende))
-                return {}
-            end
-            if tonumber(ende) > #sorted_list then
-                print(string.format("ERROR: CPU list end %d larger than number of processors in affinity group %s", ende, tag))
-                return {}
-            end
-            for i=tonumber(start),tonumber(ende) do
-                table.insert(cpulist, sorted_list[i])
-            end
-        end
-    end
-    return cpulist
-end
-
-local function cpustr_to_cpulist_physical(cpustr)
-    local function present(list, check)
-        for i, item in pairs(list) do
-            if item == check then
-                return true
-            end
-        end
-        return false
-    end
-    local cpulist = {}
-    if not cpustr_valid(cpustr) then
-        print("ERROR: Expression contains invalid characters")
-        return {}
-    end
-    local affinity = likwid_getAffinityInfo()
-    local domain = 0
-    tag, indexstr = cpustr:match("^(%g+):(%g+)")
-    if tag == nil then
-        tag = "N"
-        indexstr = cpustr:match("^(%g+)")
-    end
-    for domidx, domcontent in pairs(affinity["domains"]) do
-        if domcontent["tag"] == tag then
-            domain = domidx
-            break
-        end
-    end
-    if domain == 0 then
-        print(string.format("ERROR: Invalid affinity domain %s", tag))
-        return {}
-    end
-    indexlist = stringsplit(indexstr, ",")
-    for i, item in pairs(indexlist) do
-        local s,e = item:find("-")
-        if s == nil then
-            if present(affinity["domains"][domain]["processorList"], tonumber(item)) then
-                table.insert(cpulist, tonumber(item))
-            else
-                print(string.format("ERROR: CPU %s not in affinity domain %s", item, tag))
-                return {}
-            end
-        else
-            start, ende = item:match("^(%d*)-(%d*)")
-            if tonumber(start) == nil then
-                print("ERROR: CPU indices smaller than 0 are not allowed")
-                return {}
-            end
-            if tonumber(ende) >= affinity["domains"][domain]["numberOfProcessors"] then
-                print(string.format("ERROR: CPU list end %d larger than number of processors in affinity group %s", ende, tag))
-                return {}
-            end
-            for i=tonumber(start),tonumber(ende) do
-                if present(affinity["domains"][domain]["processorList"], i) then
-                    table.insert(cpulist, i)
-                else
-                    print(string.format("ERROR: CPU %s not in affinity domain %s", i, tag))
-                    return {}
-                end
-            end
-        end
-    end
-    return cpulist
-end
-
-likwid.cpustr_to_cpulist_physical = cpustr_to_cpulist_physical
-
-
-local function cpustr_to_cpulist(cpustr)
-    local strlist = stringsplit(cpustr, "@")
-    local topo = likwid_getCpuTopology()
-    local cpulist = {}
-    for pos, str in pairs(strlist) do
-        if str:match("^%a*:scatter") then
-            cpulist = cpulist_concat(cpulist, cpustr_to_cpulist_scatter(str))
-        elseif str:match("^E:%a") then
-            cpulist = cpulist_concat(cpulist, cpustr_to_cpulist_expression(str))
-        elseif str:match("^L:%a") then
-            cpulist = cpulist_concat(cpulist, cpustr_to_cpulist_logical(str))
-        elseif topo["activeHWThreads"] < topo["numHWThreads"] then
-            print(string.format("INFO: You are running LIKWID in a cpuset with %d CPUs, only logical numbering allowed",topo["activeHWThreads"]))
-            if str:match("^N:") or str:match("^S%d*:") or str:match("^C%d*:") or str:match("^M%d*:") then
-                cpulist = cpulist_concat(cpulist, cpustr_to_cpulist_logical("L:"..str))
-            else
-                cpulist = cpulist_concat(cpulist, cpustr_to_cpulist_logical("L:N:"..str))
-            end
-        elseif str:match("^N:") or str:match("^S%d*:") or str:match("^C%d*:") or str:match("^M%d*:") then
-            cpulist = cpulist_concat(cpulist, cpustr_to_cpulist_logical("L:"..str))
-        else
-            local tmplist = cpustr_to_cpulist_physical(str)
-            if tmplist == {} then
-                print(string.format("ERROR: Cannot analyze string %s", str))
-            else
-                cpulist = cpulist_concat(cpulist, tmplist)
-            end
-        end
-    end
-    return tablelength(cpulist),cpulist
-end
-
-likwid.cpustr_to_cpulist = cpustr_to_cpulist
-
-local function cpuexpr_to_list(cpustr, prefix)
-    local cpulist = {}
-    if not cpustr_valid(cpustr) then
-        print("ERROR: Expression contains invalid characters")
-        return 0, {}
-    end
-    local affinity = likwid_getAffinityInfo()
-    local domain = 0
-    local exprlist = stringsplit(cpustr,",")
-    for i, expr in pairs(exprlist) do
-        local added = false
-        for domidx, domcontent in pairs(affinity["domains"]) do
-            if domcontent["tag"] == prefix..expr then
-                table.insert(cpulist, tonumber(expr))
-                added = true
-                break
-            end
-        end
-        if not added then
-            print(string.format("ERROR: No affinity domain with index %s%s", prefix, expr))
-            return 0, {}
-        end
-    end
-    return tablelength(cpulist),cpulist
-end
-
-local function nodestr_to_nodelist(cpustr)
-    return cpuexpr_to_list(cpustr, "M")
-end
-
-likwid.nodestr_to_nodelist = nodestr_to_nodelist
-
-local function sockstr_to_socklist(cpustr)
-    return cpuexpr_to_list(cpustr, "S")
-end
-
-likwid.sockstr_to_socklist = sockstr_to_socklist
-
 local function get_groups()
     groups = {}
     local cpuinfo = likwid.getCpuInfo()
     if cpuinfo == nil then return 0, {} end
     local f = io.popen("ls " .. likwid.groupfolder .. "/" .. cpuinfo["short_name"] .."/*.txt 2>/dev/null")
-    if f == nil then
-        print("Cannot read groups for architecture "..cpuinfo["short_name"])
-        return 0, {}
+    if f ~= nil then
+        t = stringsplit(f:read("*a"),"\n")
+        f:close()
+        for i, a in pairs(t) do
+            if a ~= "" then
+                table.insert(groups,a:sub((a:match'^.*()/')+1,a:len()-4))
+            end
+        end
     end
-    t = stringsplit(f:read("*a"),"\n")
-    f:close()
-    for i, a in pairs(t) do
-        if a ~= "" then
-            table.insert(groups,a:sub((a:match'^.*()/')+1,a:len()-4))
+    f = io.popen("ls " ..os.getenv("HOME") .. "/.likwid/groups/" .. cpuinfo["short_name"] .."/*.txt 2>/dev/null")
+    if f ~= nil then
+        t = stringsplit(f:read("*a"),"\n")
+        f:close()
+        for i, a in pairs(t) do
+            if a ~= "" then
+                table.insert(groups,a:sub((a:match'^.*()/')+1,a:len()-4))
+            end
         end
     end
     return #groups,groups
@@ -808,7 +505,17 @@ local function get_groupdata(group)
     end
     if (group_exist == 0) then return new_groupdata(group, cpuinfo["perf_num_fixed_ctr"]) end
     
-    local f = assert(io.open(likwid.groupfolder .. "/" .. cpuinfo["short_name"] .. "/" .. group .. ".txt", "r"))
+    local f = io.open(likwid.groupfolder .. "/" .. cpuinfo["short_name"] .. "/" .. group .. ".txt", "r")
+    if f == nil then
+        f = io.open(os.getenv("HOME") .. "/.likwid/groups/" .. cpuinfo["short_name"] .."/" .. group .. ".txt", "r")
+        if f == nil then
+            print("Cannot read data for group "..group)
+            print("Tried folders:")
+            print(likwid.groupfolder .. "/" .. cpuinfo["short_name"] .. "/" .. group .. ".txt")
+            print(os.getenv("HOME") .. "/.likwid/groups/" .. cpuinfo["short_name"] .."/*.txt")
+            return groupdata
+        end
+    end
     local t = f:read("*all")
     f:close()
     local parse_eventset = false
@@ -1122,7 +829,7 @@ likwid.printOutput = printOutput
 local function printMarkerOutput(groups, results, groupData, cpulist)
     local nr_groups = #groups
     local maxLineFields = 0
-    local clock = likwid_getCpuClock();
+    local clock = likwid_getCpuClock()
     for g, group in pairs(groups) do
         local groupName = groupData[g]["GroupString"]
         if groupName == groupData[g]["EventString"] then
@@ -1141,11 +848,17 @@ local function printMarkerOutput(groups, results, groupData, cpulist)
 
                 infotab[1] = {"Region Info","RDTSC Runtime [s]","call count"}
                 for thread=1, nr_threads do
-                    local tmpList = {}
-                    table.insert(tmpList, "Core "..tostring(cpulist[thread]))
-                    table.insert(tmpList, string.format("%.6f", groups[g][r]["Time"][thread]))
-                    table.insert(tmpList, tostring(groups[g][r]["Count"][thread]))
-                    table.insert(infotab, tmpList)
+                    if cpulist[thread] ~= nil and
+                       groups[g][r]["Time"][thread] ~= nil and
+                       groups[g][r]["Count"][thread] ~= nil then
+                        local tmpList = {}
+                        table.insert(tmpList, "Core "..tostring(cpulist[thread]))
+                        table.insert(tmpList, string.format("%.6f", groups[g][r]["Time"][thread]))
+                        table.insert(tmpList, tostring(groups[g][r]["Count"][thread]))
+                        table.insert(infotab, tmpList)
+                    else
+                        print(string.format("Cannot find thread %d in CPU list, in time list or in call count list", thread))
+                    end
                 end
 
                 firsttab[1] = {"Event"}
@@ -1164,12 +877,15 @@ local function printMarkerOutput(groups, results, groupData, cpulist)
                     local tmpList = {}
                     table.insert(tmpList, "Core "..tostring(cpulist[t]))
                     for e=1,nr_events do
-                        local index = 0
-                        local tmp = results[g][r][e][t]["Value"]
-                        if tmp == nil then
-                            tmp = 0
+                        if results[g][r][e][t]["Value"] ~= nil then
+                            local tmp = results[g][r][e][t]["Value"]
+                            if tmp == nil then
+                                tmp = 0
+                            end
+                            table.insert(tmpList, string.format("%e",tmp))
+                        else
+                            print(string.format("Cannot find result of group %d, region %d, event %d and thread %d", g,r,e,t))
                         end
-                        table.insert(tmpList, string.format("%e",tmp))
                     end
                     table.insert(firsttab, tmpList)
                 end
@@ -1304,19 +1020,25 @@ end
 
 likwid.getResults = getResults
 
-local function getMarkerResults(filename, group_list, num_cpus)
+local function getMarkerResults(filename, group_list, cpulist)
     local cpuinfo = likwid_getCpuInfo()
     local ctr_and_events = likwid_getEventsAndCounters()
     local group_data = {}
     local results = {}
+    local num_cpus = #cpulist
     local f = io.open(filename, "r")
     if f == nil then
-        print("Have you called LIKWID_MARKER_CLOSE?")
         print(string.format("Cannot find intermediate results file %s", filename))
+        print("This happens when the application exited before calling LIKWID_MARKER_CLOSE.")
         return {}, {}
     end
-    local lines = stringsplit(f:read("*all"),"\n")
+    local finput = f:read("*all")
     f:close()
+    if finput:len() == 0 then
+        print("Marker file is empty. This seems like a failure in LIKWID_MARKER_CLOSE!")
+        return {}, {}
+    end
+    local lines = stringsplit(finput,"\n")
 
     -- Read first line with general counts
     local tmpList = stringsplit(lines[1]," ")
@@ -1330,8 +1052,9 @@ local function getMarkerResults(filename, group_list, num_cpus)
         return {},{}
     end
     local nr_regions = tonumber(tmpList[2])
-    if tonumber(nr_regions) == 0 then
+    if tonumber(nr_regions) == 0 and tonumber(tmpList[1]) > 0 then
         print("No region results can be found in marker API output file")
+        print("This happens when the application runs only on different CPUs as specified for likwid-perfctr")
         return {},{}
     end
     local nr_groups = tonumber(tmpList[3])
@@ -1344,10 +1067,10 @@ local function getMarkerResults(filename, group_list, num_cpus)
     -- Read Region IDs and names from following lines
     for l=1, #lines do
         r, gname, g = string.match(lines[1],"(%d+):([%a%g]*)-(%d+)")
-        if (r ~= nil and g ~= nil) then
+        if (r ~= nil and g ~= nil and gname ~= nil) then
             g = tonumber(g)+1
             r = tonumber(r)+1
-            
+
             if group_data[g] == nil then
                 group_data[g] = {}
             end
@@ -1376,8 +1099,18 @@ local function getMarkerResults(filename, group_list, num_cpus)
             if (r ~= nil and g ~= nil and t ~= nil and count ~= nil) then
                 r = tonumber(r)+1
                 g = tonumber(g)+1
-                t = tonumber(t)+1
+                c = tonumber(t)
+                for i, cpu in pairs(cpulist) do
+                    if cpu == c then
+                        t = i
+                        break
+                    end
+                end
                 tmpList = stringsplit(line, " ")
+                if #tmpList <= 6 then
+                    print("Line not in common format:")
+                    print(line)
+                end
                 table.remove(tmpList, 1)
                 table.remove(tmpList, 1)
                 table.remove(tmpList, 1)
@@ -1386,9 +1119,18 @@ local function getMarkerResults(filename, group_list, num_cpus)
                 events = tonumber(tmpList[2])
                 table.remove(tmpList, 1)
                 table.remove(tmpList, 1)
+
+                if group_data[g][r]["Time"] ~= nil then
+                    group_data[g][r]["Time"][t] = time
+                else
+                    print(string.format("Cannot store time for group %d region %d and thread %d", g,r,t))
+                end
+                if group_data[g][r]["Count"] ~= nil then
+                    group_data[g][r]["Count"][t] = count
+                else
+                    print(string.format("Cannot store count for group %d region %d and thread %d", g,r,t))
+                end
                 
-                table.insert(group_data[g][r]["Time"], t, time)
-                table.insert(group_data[g][r]["Count"], t, count)
                 for c=1, events do
                     if results[g][r][c] == nil then
                         results[g][r][c] = {}
@@ -1397,8 +1139,28 @@ local function getMarkerResults(filename, group_list, num_cpus)
                         results[g][r][c][t] = {}
                     end
                     local tmp = tonumber(tmpList[c])
-                    results[g][r][c][t]["Value"] = tmp
-                    results[g][r][c][t]["Counter"] = group_list[g]["Events"][c]["Counter"]
+                    if results[g][r][c][t] ~= nil then
+                        if tmp ~= nil then
+                            results[g][r][c][t]["Value"] = tmp
+                        else
+                            print(string.format("Cannot read value %s to number, setting 0",tmpList[c]))
+                            results[g][r][c][t]["Value"] = 0
+                        end
+                    else
+                        print(string.format("Result list not properly initialized for group %d, region %d, event %d and thread %d",g,r,c,t))
+                        results[g][r][c][t] = {}
+                        if tmp ~= nil then
+                            results[g][r][c][t]["Value"] = tmp
+                        else
+                            print(string.format("Cannot read value %s to number, setting 0",tmpList[c]))
+                            results[g][r][c][t]["Value"] = 0
+                        end
+                    end
+                    if results[g][r][c][t] ~= nil and group_list[g]["Events"][c]["Counter"] ~= nil then
+                        results[g][r][c][t]["Counter"] = group_list[g]["Events"][c]["Counter"]
+                    else
+                        print(string.format("Cannot store counter name in results dict for group %d, region %d, event %d and thread %d", g,r,c,t))
+                    end
                 end
             end
         end

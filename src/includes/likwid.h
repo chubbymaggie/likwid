@@ -119,8 +119,8 @@ extern "C" {
 /*! \brief Initialize LIKWID's marker API
 
 Must be called in serial region of the application to set up basic data structures
-of LIKWID. 
-Reads environment variables: 
+of LIKWID.
+Reads environment variables:
 - LIKWID_MODE (access mode)
 - LIKWID_MASK (event bitmask)
 - LIKWID_EVENTS (event string)
@@ -189,7 +189,7 @@ Returns the ID of the CPU the current process or thread is running on.
 extern int  likwid_getProcessorId() __attribute__ ((visibility ("default") ));
 /*! \brief Pin the current process to given CPU
 
-Pin the current process to the given CPU ID. The process cannot be scheduled to 
+Pin the current process to the given CPU ID. The process cannot be scheduled to
 another CPU after pinning but the pinning can be changed anytime with this function.
 @param [in] processorId CPU ID to pin the current process to
 @return error code (1 for success, 0 for error)
@@ -197,7 +197,7 @@ another CPU after pinning but the pinning can be changed anytime with this funct
 extern int  likwid_pinProcess(int processorId) __attribute__ ((visibility ("default") ));
 /*! \brief Pin the current thread to given CPU
 
-Pin the current thread to the given CPU ID. The thread cannot be scheduled to 
+Pin the current thread to the given CPU ID. The thread cannot be scheduled to
 another CPU after pinning but the pinning can be changed anytime with this function
 @param [in] processorId CPU ID to pin the current thread to
 @return error code (1 for success, 0 for error)
@@ -205,20 +205,20 @@ another CPU after pinning but the pinning can be changed anytime with this funct
 extern int  likwid_pinThread(int processorId) __attribute__ ((visibility ("default") ));
 /** @}*/
 
-/* 
+/*
 ################################################################################
 # Access client related functions
 ################################################################################
 */
-/** \addtogroup AccessClient Access client module
+/** \addtogroup Access Access module
  *  @{
  */
 
 /*! \brief Enum for the access modes
 
-LIKWID supports multiple access modes to the MSR and PCI performance monitoring 
+LIKWID supports multiple access modes to the MSR and PCI performance monitoring
 registers. For direct access the user must have enough priviledges to access the
-MSR and PCI devices. The daemon mode forwards the operations to a daemon with 
+MSR and PCI devices. The daemon mode forwards the operations to a daemon with
 higher priviledges.
 */
 typedef enum {
@@ -226,24 +226,30 @@ typedef enum {
     ACCESSMODE_DAEMON = 1 /*!< \brief Use the access daemon to access the registers */
 } AccessMode;
 
-/*! \brief Set accessClient mode
+/*! \brief Set access mode
 
-Sets the mode how the MSR and PCI registers should be accessed. 0 for direct access (propably root priviledges required) and 1 for accesses through the access daemon. It must be called before accessClient_init()
+Sets the mode how the MSR and PCI registers should be accessed. 0 for direct access (propably root priviledges required) and 1 for accesses through the access daemon. It must be called before HPMinit()
 @param [in] mode (0=direct, 1=daemon)
 */
-extern void accessClient_setaccessmode(int mode) __attribute__ ((visibility ("default") ));
-/*! \brief Initialize socket for communication with the access daemon
+extern void HPMmode(int mode) __attribute__ ((visibility ("default") ));
+/*! \brief Initialize access module
 
-Initializes the file descriptor by starting and connecting to a new access daemon.
-@param [out] socket_fd Pointer to socket file descriptor
+Initialize the module internals to either the MSR/PCI files or the access daemon
+@return error code (0 for sccess)
 */
-extern void accessClient_init(int* socket_fd) __attribute__ ((visibility ("default") ));
-/*! \brief Destroy socket for communication with the access daemon
+extern int HPMinit() __attribute__ ((visibility ("default") ));
+/*! \brief Add CPU to access module
 
-Destroys the file descriptor by disconnecting and shutting down the access daemon
-@param [in] socket_fd socket file descriptor
+Add the given CPU to the access module. This opens the commnunication to either the MSR/PCI files or the access daemon.
+@param [in] cpu_id CPU that should be enabled for measurements
+@return error code (0 for success, -ENODEV if access cannot be initialized
 */
-extern void accessClient_finalize(int socket_fd) __attribute__ ((visibility ("default") ));
+extern int HPMaddThread(int cpu_id) __attribute__ ((visibility ("default") ));
+/*! \brief Close connections
+
+Close the connections to the MSR/PCI files or the access daemon
+*/
+extern void HPMfinalize() __attribute__ ((visibility ("default") ));
 /** @}*/
 
 /*
@@ -256,8 +262,8 @@ extern void accessClient_finalize(int socket_fd) __attribute__ ((visibility ("de
 */
 /*! \brief Structure holding values of the configuration file
 
-LIKWID supports the definition of runtime values in a configuration file. The 
-most important configurations in most cases are the path the access daemon and 
+LIKWID supports the definition of runtime values in a configuration file. The
+most important configurations in most cases are the path the access daemon and
 the corresponding access mode. In order to avoid reading in the system topology
 at each start, a path to a topology file can be set. The other values are mostly
 used internally.
@@ -297,7 +303,7 @@ Get the initialized configuration
 */
 extern Configuration_t get_configuration(void) __attribute__ ((visibility ("default") ));
 /** @}*/
-/* 
+/*
 ################################################################################
 # CPU topology related functions
 ################################################################################
@@ -307,7 +313,7 @@ extern Configuration_t get_configuration(void) __attribute__ ((visibility ("defa
 */
 /*! \brief Structure with general CPU information
 
-General information covers CPU family, model, name and current clock and vendor 
+General information covers CPU family, model, name and current clock and vendor
 specific information like the version of Intel's performance monitoring facility.
 */
 typedef struct {
@@ -428,7 +434,7 @@ extern void topology_finalize(void) __attribute__ ((visibility ("default") ));
 */
 extern void print_supportedCPUs(void) __attribute__ ((visibility ("default") ));
 /** @}*/
-/* 
+/*
 ################################################################################
 # NUMA related functions
 ################################################################################
@@ -439,7 +445,7 @@ extern void print_supportedCPUs(void) __attribute__ ((visibility ("default") ));
 /*! \brief CPUs in NUMA node and general information about a NUMA domain
 
 The NumaNode structure describes the topology and holds general information of a
-NUMA node. The structure is filled by calling numa_init() by either the HWLOC 
+NUMA node. The structure is filled by calling numa_init() by either the HWLOC
 library or by evaluating the /proc filesystem.
 \extends NumaTopology
 */
@@ -449,7 +455,6 @@ typedef struct {
     uint64_t freeMemory; /*!< \brief Amount of free memory in the NUMA node */
     uint32_t numberOfProcessors; /*!< \brief umber of processors covered by the NUMA node and length of \a processors */
     uint32_t*  processors; /*!< \brief List of HW threads in the NUMA node */
-    uint32_t*  processorsCompact; /*!< \brief Currently unused */
     uint32_t numberOfDistances; /*!< \brief Amount of distances to the other NUMA nodes in the system and self  */
     uint32_t*  distances; /*!< \brief List of distances to the other NUMA nodes and self */
 } NumaNode;
@@ -512,7 +517,7 @@ NumaTopology_t
 */
 extern int likwid_getNumberOfNodes(void) __attribute__ ((visibility ("default") ));
 /** @}*/
-/* 
+/*
 ################################################################################
 # Affinity domains related functions
 ################################################################################
@@ -536,7 +541,7 @@ typedef struct {
 /*! \brief The AffinityDomains data structure holds different count variables describing the
 various system layers
 
-Affinity domains are for example the amount of NUMA domains, CPU sockets/packages or LLC 
+Affinity domains are for example the amount of NUMA domains, CPU sockets/packages or LLC
 (Last Level Cache) cache domains of the current machine. Moreover a list of
 \a domains holds the processor lists for each domain that are used for
 scheduling processes to domain specific HW threads. Some amounts are duplicates
@@ -610,6 +615,49 @@ extern void affinity_finalize() __attribute__ ((visibility ("default") ));
 
 /*
 ################################################################################
+# CPU string parsing related functions
+################################################################################
+*/
+/** \addtogroup CPUParse CPU string parser module
+ *  @{
+ */
+
+/*! \brief Read CPU selection string and resolve to available CPU numbers
+
+Reads the CPU selection string and fills the given list with the CPU numbers
+defined in the selection string. This function is a interface function for the
+different selection modes: scatter, expression, logical and physical.
+@param [in] cpustring Selection string
+@param [out] cpulist List of CPUs
+@param [in] length Length of cpulist
+@return error code (>0 on success for the returned list length, -ERRORCODE on failure)
+*/
+extern int cpustr_to_cpulist(char* cpustring, int* cpulist, int length)  __attribute__ ((visibility ("default") ));
+/*! \brief Read NUMA node selection string and resolve to available NUMA node numbers
+
+Reads the NUMA node selection string and fills the given list with the NUMA node numbers
+defined in the selection string.
+@param [in] nodestr Selection string
+@param [out] nodes List of available NUMA nodes
+@param [in] length Length of NUMA node list
+@return error code (>0 on success for the returned list length, -ERRORCODE on failure)
+*/
+extern int nodestr_to_nodelist(char* nodestr, int* nodes, int length)  __attribute__ ((visibility ("default") ));
+/*! \brief Read CPU socket selection string and resolve to available CPU socket numbers
+
+Reads the CPU socket selection string and fills the given list with the CPU socket numbers
+defined in the selection string.
+@param [in] sockstr Selection string
+@param [out] sockets List of available CPU sockets
+@param [in] length Length of CPU socket list
+@return error code (>0 on success for the returned list length, -ERRORCODE on failure)
+*/
+extern int sockstr_to_socklist(char* sockstr, int* sockets, int length)  __attribute__ ((visibility ("default") ));
+
+/** @}*/
+
+/*
+################################################################################
 # Performance monitoring related functions
 ################################################################################
 */
@@ -657,7 +705,7 @@ The counter registered are zeroed before enabling the counters
 @return 0 on success and -(thread_id+1) for error
 */
 extern int perfmon_startCounters(void) __attribute__ ((visibility ("default") ));
-/*! \brief Stop performance monitoring counters 
+/*! \brief Stop performance monitoring counters
 
 Stop the counters that have been previously started by perfmon_startCounters().
 All config registers get zeroed before reading the counter register.
@@ -732,6 +780,12 @@ extern int perfmon_getIdOfActiveGroup(void) __attribute__ ((visibility ("default
 @return Number of threads
 */
 extern int perfmon_getNumberOfThreads(void) __attribute__ ((visibility ("default") ));
+
+
+/*! \brief Set verbosity of LIKWID library
+
+*/
+extern void perfmon_setVerbosity(int verbose) __attribute__ ((visibility ("default") ));
 /** @}*/
 
 /*
@@ -775,6 +829,11 @@ extern double timer_print( TimerData* time) __attribute__ ((visibility ("default
 @return Time in cycles
 */
 extern uint64_t timer_printCycles( TimerData* time) __attribute__ ((visibility ("default") ));
+/*! \brief Reset values in TimerData
+
+@param [in] time Structure holding the cycle count at start and stop
+*/
+extern void timer_reset( TimerData* time ) __attribute__ ((visibility ("default") ));
 /*! \brief Return the CPU clock determined at timer_init
 
 @return CPU clock
@@ -799,11 +858,16 @@ extern void timer_stop ( TimerData* time) __attribute__ ((visibility ("default")
 
 @param [in] usec Amount of usecs to sleep
 */
-int timer_sleep(unsigned long usec) __attribute__ ((visibility ("default") ));
+extern int timer_sleep(unsigned long usec) __attribute__ ((visibility ("default") ));
+
+/*! \brief Finalize timer module
+
+*/
+extern void timer_finalize(void) __attribute__ ((visibility ("default") ));
 
 /** @}*/
 
-/* 
+/*
 ################################################################################
 # Power measurements related functions
 ################################################################################
@@ -907,15 +971,15 @@ typedef PowerInfo* PowerInfo_t;
 /** \brief Pointer for exporting the PowerData data structure */
 typedef PowerData* PowerData_t;
 
-/*! \brief Initialize power measurements on specific CPU
+/*! \brief Initialize energy measurements on specific CPU
 
-Additionally, it reads basic information about the power measurements like 
+Additionally, it reads basic information about the energy measurements like
 minimal measurement time.
-@param [in] cpuId Initialize power facility for this CPU
+@param [in] cpuId Initialize energy facility for this CPU
 @return error code
 */
 extern int power_init(int cpuId) __attribute__ ((visibility ("default") ));
-/*! \brief Get a pointer to the power facility information
+/*! \brief Get a pointer to the energy facility information
 
 @return PowerInfo_t pointer
 \sa PowerInfo_t
@@ -923,70 +987,73 @@ extern int power_init(int cpuId) __attribute__ ((visibility ("default") ));
 extern PowerInfo_t get_powerInfo(void) __attribute__ ((visibility ("default") ));
 /*! \brief Read the current power value
 
-@param [in] cpuId Read power facility for this CPU
-@param [in] reg Power register
-@param [out] data Power data
+@param [in] cpuId Read energy facility for this CPU
+@param [in] reg Energy register
+@param [out] data Energy data
 */
 extern int power_read(int cpuId, uint64_t reg, uint32_t *data) __attribute__ ((visibility ("default") ));
-/*! \brief Read the current power value using a specific communication socket
+/*! \brief Read the current energy value using a specific communication socket
 
 @param [in] socket_fd Communication socket for the read operation
-@param [in] cpuId Read power facility for this CPU
-@param [in] reg Power register
-@param [out] data Power data
+@param [in] cpuId Read energy facility for this CPU
+@param [in] reg Energy register
+@param [out] data Energy data
 */
 extern int power_tread(int socket_fd, int cpuId, uint64_t reg, uint32_t *data) __attribute__ ((visibility ("default") ));
-/*! \brief Start power measurements
+/*! \brief Start energy measurements
 
-@param [in,out] data Data structure holding start and stop values for power measurements
-@param [in] cpuId Start power facility for this CPU
+@param [in,out] data Data structure holding start and stop values for energy measurements
+@param [in] cpuId Start energy facility for this CPU
 @param [in] type Which type should be measured
 @return error code
 */
 extern int power_start(PowerData_t data, int cpuId, PowerType type) __attribute__ ((visibility ("default") ));
-/*! \brief Stop power measurements
+/*! \brief Stop energy measurements
 
-@param [in,out] data Data structure holding start and stop values for power measurements
-@param [in] cpuId Start power facility for this CPU
+@param [in,out] data Data structure holding start and stop values for energy measurements
+@param [in] cpuId Start energy facility for this CPU
 @param [in] type Which type should be measured
 @return error code
 */
 extern int power_stop(PowerData_t data, int cpuId, PowerType type) __attribute__ ((visibility ("default") ));
-/*! \brief Print power measurements gathered by power_start() and power_stop()
+/*! \brief Print energy measurements gathered by power_start() and power_stop()
 
-@param [in] data Data structure holding start and stop values for power measurements
+@param [in] data Data structure holding start and stop values for energy measurements
 @return Consumed energy in Joules
 */
 extern double power_printEnergy(PowerData* data) __attribute__ ((visibility ("default") ));
 /*! \brief Get energy Unit
 
 @param [in] domain RAPL domain ID
-@return Power unit of the given RAPL domain
+@return Energy unit of the given RAPL domain
 */
 extern double power_getEnergyUnit(int domain) __attribute__ ((visibility ("default") ));
 
 /*! \brief Get the values of the limit register of a domain
+NOT IMPLEMENTED
 
 @param [in] cpuId CPU ID
 @param [in] domain RAPL domain ID
-@param [out] power Power limit
+@param [out] power Energy limit
 @param [out] time Time limit
 @return error code
 */
 int power_limitGet(int cpuId, PowerType domain, double* power, double* time) __attribute__ ((visibility ("default") ));
 
 /*! \brief Set the values of the limit register of a domain
+NOT IMPLEMENTED
 
 @param [in] cpuId CPU ID
 @param [in] domain RAPL domain ID
-@param [in] power Power limit
+@param [in] power Energy limit
 @param [in] time Time limit
 @param [in] doClamping Activate clamping (going below OS-requested power level)
 @return error code
 */
 int power_limitSet(int cpuId, PowerType domain, double power, double time, int doClamping) __attribute__ ((visibility ("default") ));
 
-/*! \brief Get the state of a power limit, activated or deactivated
+/*! \brief Get the state of a energy limit, activated or deactivated
+NOT IMPLEMENTED
 
 @param [in] cpuId CPU ID
 @param [in] domain RAPL domain ID
@@ -999,7 +1066,7 @@ int power_limitState(int cpuId, PowerType domain) __attribute__ ((visibility ("d
 extern void power_finalize(void) __attribute__ ((visibility ("default") ));
 /** @}*/
 
-/* 
+/*
 ################################################################################
 # Thermal measurements related functions
 ################################################################################
@@ -1027,32 +1094,8 @@ extern int thermal_read(int cpuId, uint32_t *data) __attribute__ ((visibility ("
 extern int thermal_tread(int socket_fd, int cpuId, uint32_t *data) __attribute__ ((visibility ("default") ));
 /** @}*/
 
-/* 
-################################################################################
-# Timeline daemon related functions
-################################################################################
-*/
-/** \addtogroup Daemon Timeline daemon module
- *  @{
- */
-/*! \brief Start timeline daemon
 
-Starts the timeline daemon which reads and prints the counter values after each \a duration time
-@param [in] duration Time interval in ns
-@param [in] outfile File to write the intermediate readings or NULL to write to stderr
-@return 0 on success and -EFAULT if counters cannot be started
-*/
-extern int daemon_start(uint64_t duration, const char* outfile) __attribute__ ((visibility ("default") ));
-/*! \brief Stop timeline daemon
-
-Stop the timeline daemon using the signal \a sig
-@param [in] sig Signal code to kill the daemon (see signal.h for signal codes)
-@return 0 on success and the negative error code at failure
-*/
-extern int daemon_stop(int sig) __attribute__ ((visibility ("default") ));
-/** @}*/
-
-/* 
+/*
 ################################################################################
 # Memory sweeping related functions
 ################################################################################
@@ -1074,6 +1117,83 @@ Sweeps (zeros) the memory of all NUMA nodes containing the CPUs in \a processorL
 */
 extern void memsweep_threadGroup(int* processorList, int numberOfProcessors) __attribute__ ((visibility ("default") ));
 /** @}*/
+
+/*
+################################################################################
+# CPU feature related functions
+################################################################################
+*/
+/** \addtogroup CpuFeatures Retrieval and manipulation of processor features
+ *  @{
+ */
+
+typedef enum {
+    FEAT_HW_PREFETCHER=0, /*!< \brief Hardware prefetcher */
+    FEAT_CL_PREFETCHER, /*!< \brief Adjacent cache line prefetcher */
+    FEAT_DCU_PREFETCHER, /*!< \brief DCU L1 data cache prefetcher */
+    FEAT_IP_PREFETCHER, /*!< \brief IP L1 data cache prefetcher */
+    FEAT_FAST_STRINGS, /*!< \brief Fast-strings feature */
+    FEAT_THERMAL_CONTROL, /*!< \brief Automatic Thermal Control Circuit */
+    FEAT_PERF_MON, /*!< \brief Hardware performance monitoring */
+    FEAT_FERR_MULTIPLEX, /*!< \brief FERR# Multiplexing, must be 1 for XAPIC interrupt model */
+    FEAT_BRANCH_TRACE_STORAGE, /*!< \brief Branch Trace Storage */
+    FEAT_XTPR_MESSAGE, /*!< \brief xTPR Message to set processor priority */
+    FEAT_PEBS, /*!< \brief Precise Event Based Sampling (PEBS) */
+    FEAT_SPEEDSTEP, /*!< \brief Enhanced Intel SpeedStep Technology to reduce energy consumption*/
+    FEAT_MONITOR, /*!< \brief MONITOR/MWAIT feature to monitor write-back stores*/
+    FEAT_SPEEDSTEP_LOCK, /*!< \brief Enhanced Intel SpeedStep Technology Select Lock */
+    FEAT_CPUID_MAX_VAL, /*!< \brief Limit CPUID Maxval */
+    FEAT_XD_BIT, /*!< \brief Execute Disable Bit */
+    FEAT_DYN_ACCEL, /*!< \brief Intel Dynamic Acceleration */
+    FEAT_TURBO_MODE, /*!< \brief Intel Turbo Mode */
+    FEAT_TM2, /*!< \brief Thermal Monitoring 2 */
+    CPUFEATURES_MAX 
+} CpuFeature;
+
+/*! \brief Initialize the internal feature variables for all CPUs
+
+Initialize the internal feature variables for all CPUs
+*/
+extern void cpuFeatures_init() __attribute__ ((visibility ("default") ));
+/*! \brief Print state of all CPU features for a given CPU
+
+Print state of all CPU features for a given CPU
+@param [in] cpu CPU ID
+*/
+extern void cpuFeatures_print(int cpu) __attribute__ ((visibility ("default") ));
+/*! \brief Get state of a CPU feature for a given CPU
+
+Get state of a CPU feature for a given CPU
+@param [in] cpu CPU ID
+@param [in] type CPU feature
+@return State of CPU feature (1=enabled, 0=disabled)
+*/
+extern int cpuFeatures_get(int cpu, CpuFeature type)  __attribute__ ((visibility ("default") ));
+/*! \brief Get the name of a CPU feature
+
+Get the name of a CPU feature
+@param [in] type CPU feature
+@return Name of the CPU feature or NULL if feature is not available
+*/
+extern char* cpuFeatures_name(CpuFeature type)  __attribute__ ((visibility ("default") ));
+/*! \brief Enable a CPU feature for a specific CPU
+
+Enable a CPU feature for a specific CPU. Only the state of the prefetchers can be changed, all other features return -EINVAL
+@param [in] cpu CPU ID
+@param [in] type CPU feature
+@return Status of operation (0=success, all others are erros, either by MSR access or invalid feature)
+*/
+extern int cpuFeatures_enable(int cpu, CpuFeature type, int print) __attribute__ ((visibility ("default") ));
+/*! \brief Disable a CPU feature for a specific CPU
+
+Disable a CPU feature for a specific CPU. Only the state of the prefetchers can be changed, all other features return -EINVAL
+@param [in] cpu CPU ID
+@param [in] type CPU feature
+@return Status of operation (0=success, all others are erros, either by MSR access or invalid feature)
+*/
+extern int cpuFeatures_disable(int cpu, CpuFeature type, int print) __attribute__ ((visibility ("default") ));
+/** @}*/
+
 #ifdef __cplusplus
 }
 #endif

@@ -78,6 +78,7 @@ L_APPS      =   likwid-perfctr \
 				likwid-memsweeper \
 				likwid-agent \
 				likwid-mpirun \
+				likwid-features \
 				likwid-perfscope \
 				likwid-genTopoCfg
 C_APPS      =   bench/likwid-bench
@@ -130,7 +131,7 @@ $(STATIC_TARGET_LIB): $(BUILD_DIR) $(PERFMONHEADERS) $(OBJ) $(TARGET_HWLOC_LIB) 
 
 $(DYNAMIC_TARGET_LIB): $(BUILD_DIR) $(PERFMONHEADERS) $(OBJ) $(TARGET_HWLOC_LIB) $(TARGET_LUA_LIB)
 	@echo "===>  CREATE SHARED LIB  $(TARGET_LIB)"
-	$(Q)${CC} $(DEBUG_FLAGS) $(SHARED_LFLAGS) -Wl,-soname,$(TARGET_LIB).$(VERSION) $(SHARED_CFLAGS) -o $(DYNAMIC_TARGET_LIB) $(OBJ) $(LIBS) $(TARGET_HWLOC_LIB) -Wl,-rpath=$(INSTALLED_LIBPREFIX) $(TARGET_LUA_LIB) -Wl,-rpath=$(INSTALLED_LIBPREFIX)
+	$(Q)${CC} $(DEBUG_FLAGS) $(SHARED_LFLAGS) -Wl,-soname,$(TARGET_LIB).$(VERSION) $(SHARED_CFLAGS) -o $(DYNAMIC_TARGET_LIB) $(OBJ) $(LIBS) $(TARGET_HWLOC_LIB) $(TARGET_LUA_LIB) $(RPATHS)
 
 $(DAEMON_TARGET): $(SRC_DIR)/access-daemon/accessDaemon.c
 	@echo "===>  BUILD access daemon likwid-accessD"
@@ -172,8 +173,8 @@ $(BENCH_TARGET):
 #PATTERN RULES
 $(BUILD_DIR)/%.o:  %.c
 	@echo "===>  COMPILE  $@"
-	$(Q)$(CC) -g -c $(DEBUG_FLAGS) $(CFLAGS) $(ANSI_CFLAGS) $(CPPFLAGS) $< -o $@
-	$(Q)$(CC) -g $(DEBUG_FLAGS) $(CPPFLAGS) -MT $(@:.d=.o) -MM  $< > $(BUILD_DIR)/$*.d
+	$(Q)$(CC) -c $(DEBUG_FLAGS) $(CFLAGS) $(ANSI_CFLAGS) $(CPPFLAGS) $< -o $@
+	$(Q)$(CC) $(DEBUG_FLAGS) $(CPPFLAGS) -MT $(@:.d=.o) -MM  $< > $(BUILD_DIR)/$*.d
 
 $(BUILD_DIR)/%.o:  %.cc
 	@echo "===>  COMPILE  $@"
@@ -182,7 +183,9 @@ $(BUILD_DIR)/%.o:  %.cc
 
 $(BUILD_DIR)/%.o:  %.S
 	@echo "===>  COMPILE  $@"
-	$(Q)$(CC) -c $(DEBUG_FLAGS) $(CFLAGS) $(CXXFLAGS) $(CPPFLAGS) $< -o $@
+	$(Q)$(CPP) $(CPPFLAGS) $< -o $@.tmp
+	$(Q)$(AS) $(ASFLAGS) $@.tmp -o $@
+	@rm $@.tmp
 
 
 $(BUILD_DIR)/%.h:  $(SRC_DIR)/includes/%.txt
@@ -231,6 +234,7 @@ distclean: $(TARGET_LUA_LIB) $(TARGET_HWLOC_LIB) $(BENCH_TARGET)
 	@rm -f tags
 
 ifeq ($(BUILDDAEMON),true)
+ifneq ($(COMPILER),MIC)
 install_daemon:
 	@echo "===> INSTALL access daemon to $(ACCESSDAEMON)"
 	@mkdir -p `dirname $(ACCESSDAEMON)`
@@ -244,8 +248,15 @@ install_daemon:
 uninstall_daemon:
 	@echo "===> No UNINSTALL of the access daemon"
 endif
+else
+install_daemon:
+	@echo "===> No INSTALL of the access daemon"
+uninstall_daemon:
+	@echo "===> No UNINSTALL of the access daemon"
+endif
 
 ifeq ($(BUILDFREQ),true)
+ifneq ($(COMPILER),MIC)
 install_freq:
 	@echo "===> INSTALL setFrequencies tool to $(PREFIX)/sbin/$(FREQ_TARGET)"
 	@mkdir -p $(PREFIX)/sbin
@@ -253,6 +264,12 @@ install_freq:
 uninstall_freq:
 	@echo "===> REMOVING setFrequencies tool from $(PREFIX)/sbin/$(FREQ_TARGET)"
 	@rm -f $(PREFIX)/sbin/$(FREQ_TARGET)
+else
+install_freq:
+	@echo "===> No INSTALL of setFrequencies tool"
+uninstall_freq:
+	@echo "===> No UNINSTALL of setFrequencies tool"
+endif
 else
 install_freq:
 	@echo "===> No INSTALL of setFrequencies tool"
@@ -288,7 +305,6 @@ install: install_daemon install_freq
 	@echo "===> INSTALL man pages to $(MANPREFIX)/man1"
 	@mkdir -p $(MANPREFIX)/man1
 	@sed -e "s/<VERSION>/$(VERSION)/g" -e "s/<DATE>/$(DATE)/g" < $(DOC_DIR)/likwid-topology.1 > $(MANPREFIX)/man1/likwid-topology.1
-	@sed -e "s/<VERSION>/$(VERSION)/g" -e "s/<DATE>/$(DATE)/g" < $(DOC_DIR)/likwid-features.1 > $(MANPREFIX)/man1/likwid-features.1
 	@sed -e "s/<VERSION>/$(VERSION)/g" -e "s/<DATE>/$(DATE)/g" -e "s+<PREFIX>+$(PREFIX)+g" < $(DOC_DIR)/likwid-perfctr.1 > $(MANPREFIX)/man1/likwid-perfctr.1
 	@sed -e "s/<VERSION>/$(VERSION)/g" -e "s/<DATE>/$(DATE)/g" < $(DOC_DIR)/likwid-powermeter.1 > $(MANPREFIX)/man1/likwid-powermeter.1
 	@sed -e "s/<VERSION>/$(VERSION)/g" -e "s/<DATE>/$(DATE)/g" < $(DOC_DIR)/likwid-pin.1 > $(MANPREFIX)/man1/likwid-pin.1
@@ -299,6 +315,7 @@ install: install_daemon install_freq
 	@sed -e "s/<VERSION>/$(VERSION)/g" -e "s/<DATE>/$(DATE)/g" < $(DOC_DIR)/likwid-mpirun.1 > $(MANPREFIX)/man1/likwid-mpirun.1
 	@sed -e "s/<VERSION>/$(VERSION)/g" -e "s/<DATE>/$(DATE)/g" < $(DOC_DIR)/likwid-perfscope.1 > $(MANPREFIX)/man1/likwid-perfscope.1
 	@sed -e "s/<VERSION>/$(VERSION)/g" -e "s/<DATE>/$(DATE)/g" < $(DOC_DIR)/likwid-setFreq.1 > $(MANPREFIX)/man1/likwid-setFreq.1
+	@sed -e "s/<VERSION>/$(VERSION)/g" -e "s/<DATE>/$(DATE)/g" < $(DOC_DIR)/likwid-features.1 > $(MANPREFIX)/man1/likwid-features.1
 	@chmod 644 $(MANPREFIX)/man1/likwid-*
 	@echo "===> INSTALL headers to $(PREFIX)/include"
 	@mkdir -p $(PREFIX)/include
@@ -308,9 +325,13 @@ install: install_daemon install_freq
 	@echo "===> INSTALL groups to $(PREFIX)/share/likwid/perfgroups"
 	@mkdir -p $(PREFIX)/share/likwid/perfgroups
 	@cp -rf groups/* $(PREFIX)/share/likwid/perfgroups
+	@chmod 755 $(PREFIX)/share/likwid/perfgroups
+	@find $(PREFIX)/share/likwid/perfgroups -name "*.txt" -exec chmod 644 {} \;
 	@echo "===> INSTALL monitoring groups to $(PREFIX)/share/likwid/mongroups"
 	@mkdir -p $(PREFIX)/share/likwid/mongroups
 	@cp -rf monitoring/groups/* $(PREFIX)/share/likwid/mongroups
+	@chmod 755 $(PREFIX)/share/likwid/mongroups
+	@find $(PREFIX)/share/likwid/mongroups -name "*.txt" -exec chmod 644 {} \;
 	@mkdir -p $(PREFIX)/share/likwid/docs
 	@install -m 644 doc/bstrlib.txt $(PREFIX)/share/likwid/docs
 	@mkdir -p $(PREFIX)/share/likwid/examples
@@ -335,6 +356,7 @@ uninstall: uninstall_daemon uninstall_freq
 	done
 	@rm -f $(BINPREFIX)/feedGnuplot
 	@rm -f $(BINPREFIX)/likwid-lua
+	@rm -f $(BINPREFIX)/likwid-bench
 	@echo "===> REMOVING Lua to likwid interface from $(PREFIX)/share/lua"
 	@rm -rf  $(PREFIX)/share/lua/likwid.lua
 	@echo "===> REMOVING libs from $(LIBPREFIX)"
@@ -354,6 +376,7 @@ uninstall: uninstall_daemon uninstall_freq
 	@rm -rf $(PREFIX)/share/likwid/perfgroups
 	@rm -rf $(PREFIX)/share/likwid/docs
 	@rm -rf $(PREFIX)/share/likwid/examples
+	@rm -rf $(PREFIX)/share/likwid
 
 
 local: $(L_APPS) likwid.lua
@@ -365,4 +388,12 @@ local: $(L_APPS) likwid.lua
 	done
 	@sed -i -e "s/<VERSION>/$(VERSION)/g" -e "s/<DATE>/$(DATE)/g" -e "s/<RELEASE>/$(RELEASE)/g" -e "s+$(PREFIX)/lib+$(PWD)+g" -e "s+$(PREFIX)/share/likwid/perfgroups+$(PWD)/groups+g" likwid.lua;
 	@sed -i -e "s+$(PREFIX)/share/likwid/mongroups+$(PWD)/monitoring/groups+g" likwid-agent
+	@ln -sf liblikwid.so liblikwid.so.$(VERSION)
+	@ln -sf ext/hwloc/liblikwid-hwloc.so liblikwid-hwloc.so.$(VERSION)
+	@ln -sf ext/lua/liblikwid-lua.so liblikwid-lua.so.$(VERSION)
+	@echo "export LD_LIBRARY_PATH=$(PWD):$$LD_LIBRARY_PATH"
 
+testit: test/test-likwidAPI.c
+	make -C test test-likwidAPI
+	test/test-likwidAPI
+	make -C test/executable_tests

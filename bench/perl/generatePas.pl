@@ -15,6 +15,7 @@ my $streams;
 my $type;
 my $flops;
 my $bytes;
+my $desc;
 my $prolog='';
 my $loop='';
 my $increment;
@@ -25,6 +26,11 @@ my $multi=0;
 my $BenchRoot = $ARGV[0];
 my $OutputDirectory = $ARGV[1];
 my $TemplateRoot = $ARGV[2];
+my $InputFile = "";
+if (@ARGV == 4)
+{
+    $InputFile = $ARGV[3];
+}
 my $DEBUG = 0;
 
 my $stream_lookup = {
@@ -87,6 +93,13 @@ while (defined(my $file = readdir(DIR))) {
         $multi=0;
         $prolog='';
         $loop='';
+        $desc='';
+        my $loads=-1;
+        my $stores=-1;
+        my $branches=-1;
+        my $instr=-1;
+        my $loop_instr=-1;
+        my $uops = -1;
         open FILE, "<$BenchRoot/$file";
         while (<FILE>) {
             my $line = $_;
@@ -102,6 +115,20 @@ while (defined(my $file = readdir(DIR))) {
                 $flops = $1;
             } elsif ($line =~ /BYTES[ ]+([0-9]+)/) {
                 $bytes = $1;
+            } elsif ($line =~ /LOADS[ ]+([0-9]+)/) {
+                $loads = $1;
+            } elsif ($line =~ /STORES[ ]+([0-9]+)/) {
+                $stores = $1;
+            } elsif ($line =~ /BRANCHES[ ]+([0-9]+)/) {
+                $branches = $1;
+            } elsif ($line =~ /INSTR_CONST[ ]+([0-9]+)/) {
+                $instr = $1;
+            } elsif ($line =~ /INSTR_LOOP[ ]+([0-9]+)/) {
+                $loop_instr = $1;
+            } elsif ($line =~ /UOPS[ ]+([0-9]+)/) {
+                $uops = $1;
+            } elsif ($line =~ /DESC[ ]+([a-zA-z ,.\-_\(\)\+\*\/=]+)/) {
+                $desc = $1;
             } elsif ($line =~ /INC[ ]+([0-9]+)/) {
                 $increment = $1;
                 $skip = 1;
@@ -139,6 +166,7 @@ while (defined(my $file = readdir(DIR))) {
         $Vars->{loop} = $loop;
         $Vars->{skip} = $skip;
         $Vars->{multi} = $multi;
+        $Vars->{desc} = $desc;
 
 #print Dumper($Vars);
 
@@ -147,8 +175,15 @@ while (defined(my $file = readdir(DIR))) {
                          streams => $streams,
                          type    => $type,
                          stride  => $increment,
-                         flops   => $flops, 
-                         bytes   => $bytes});
+                         flops   => $flops,
+                         bytes   => $bytes,
+                         desc    => $desc,
+                         loads    => $loads,
+                         stores    => $stores,
+                         branches    => $branches,
+                         instr_const    => $instr,
+                         instr_loop    => $loop_instr,
+                         uops    => $uops});
     }
 }
 #print Dumper(@Testcases);
@@ -157,7 +192,7 @@ my @TestcasesSorted = sort {$a->{name} cmp $b->{name}} @Testcases;
 my $Vars;
 $Vars->{Testcases} = \@TestcasesSorted;
 $Vars->{numKernels} = $#TestcasesSorted+1;
-$Vars->{allTests} = join('\n',map {$_->{name}} @TestcasesSorted);
+$Vars->{allTests} = join('\n',map {$_->{name}." - ".$_->{desc}} @TestcasesSorted);
 $tpl->process('testcases.tt', $Vars, "$OutputDirectory/testcases.h");
 
 

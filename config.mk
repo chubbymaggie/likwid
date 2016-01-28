@@ -1,6 +1,6 @@
 # Please have a look in INSTALL and the WIKI for details on
 # configuration options setup steps.
-# supported: GCC, MIC (ICC)
+# supported: GCC, CLANG, ICC, MIC (ICC), GCCX86 (for 32bit systems)
 COMPILER = GCC#NO SPACE
 
 # Define the color of the likwid-pin output
@@ -58,6 +58,7 @@ USE_HWLOC = true#NO SPACE
 DEBUG = false#NO SPACE
 
 # Usually you do not need to edit below
+RPATHS = -Wl,-rpath=$(INSTALLED_LIBPREFIX)
 MAX_NUM_THREADS = 263
 MAX_NUM_NODES = 64
 CFG_FILE_PATH = /etc/likwid.cfg

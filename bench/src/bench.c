@@ -427,16 +427,20 @@ void* runTest(void* arg)
 
 
 #define MEASURE(func) \
-    timer_start(&time); \
-    i = 0; \
-    for (i=0; i < SIZE_MAX; i++) \
+    iterations = 8; \
+    while (1) \
     { \
-        func; \
+        timer_start(&time); \
+        for (i=0;i<iterations;i++) \
+        { \
+            func; \
+        } \
         timer_stop(&time); \
-        if (timer_print(&time) >= (double)data->data.min_runtime) \
+        if (timer_print(&time) < (double)data->data.min_runtime) \
+            iterations = iterations << 1; \
+        else \
             break; \
     } \
-    iterations = i;  \
 
 
 void* getIterSingle(void* arg)
@@ -457,6 +461,7 @@ void* getIterSingle(void* arg)
     threadId = data->threadId;
 
     size = myData->size - (myData->size % myData->test->stride);
+    likwid_pinThread(myData->processors[threadId]);
 
 #ifdef DEBUG_LIKWID
     printf("Automatic iteration count detection:");
@@ -745,6 +750,8 @@ void* getIterSingle(void* arg)
     data->data.iter = iterations;
 #ifdef DEBUG_LIKWID
     printf(" %d iterations per thread\n", iterations);
+    if (iterations < MIN_ITERATIONS)
+        printf("Sanitizing iterations count per thread to %d\n",MIN_ITERATIONS);
 #endif
     return NULL;
 }

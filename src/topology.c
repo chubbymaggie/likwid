@@ -44,7 +44,7 @@
 #include <configuration.h>
 
 
-static volatile int init = 0;
+static int topology_initialized = 0;
 CpuInfo cpuid_info;
 CpuTopology cpuid_topology;
 
@@ -72,10 +72,12 @@ static char* haswell_ep_str = "Intel Xeon Haswell EN/EP/EX processor";
 static char* broadwell_str = "Intel Core Broadwell processor";
 static char* broadwell_d_str = "Intel Xeon D Broadwell processor";
 static char* broadwell_ep_str = "Intel Xeon Broadwell EN/EP/EX processor";
+static char* skylake_str = "Intel Skylake processor";
 static char* nehalem_ex_str = "Intel Nehalem EX processor";
 static char* westmere_ex_str = "Intel Westmere EX processor";
 static char* xeon_mp_string = "Intel Xeon MP processor";
-static char* xeon_phi_string = "Intel Xeon Phi Coprocessor";
+static char* xeon_phi_string = "Intel Xeon Phi (Knights Corner) Coprocessor";
+static char* xeon_phi2_string = "Intel Xeon Phi (Knights Landing) Coprocessor";
 static char* barcelona_str = "AMD Barcelona processor";
 static char* shanghai_str = "AMD Shanghai processor";
 static char* istanbul_str = "AMD Istanbul processor";
@@ -104,12 +106,15 @@ static char* short_westmereEX = "westmereEX";
 static char* short_haswell = "haswell";
 static char* short_haswell_ep = "haswellEP";
 static char* short_broadwell = "broadwell";
+static char* short_broadwell_d = "broadwellD";
 static char* short_broadwell_ep = "broadwellEP";
 static char* short_ivybridge = "ivybridge";
 static char* short_ivybridge_ep = "ivybridgeEP";
 static char* short_sandybridge = "sandybridge";
 static char* short_sandybridge_ep = "sandybridgeEP";
+static char* short_skylake = "skylake";
 static char* short_phi = "phi";
+static char* short_phi2 = "phi2";
 static char* short_k8 = "k8";
 static char* short_k10 = "k10";
 static char* short_k15 = "interlagos";
@@ -303,14 +308,14 @@ static int readTopologyFile(const char* filename)
                 {
                     cpuid_topology.threadPool[thread].apicId = tmp;
                 }
-                
+
             }
             else if (strcmp(field, "cacheLevels") == 0)
             {
                 int level;
                 char type[128];
                 sscanf(line, "%s %s %d %s", structure, field, &level, value);
-                
+
                 cpuid_topology.cacheLevels[level-1].level = level-1;
                 if (strcmp(value, "type") == 0)
                 {
@@ -318,19 +323,19 @@ static int readTopologyFile(const char* filename)
                     if (strcmp(type, "UNIFIEDCACHE") == 0)
                     {
                         cpuid_topology.cacheLevels[level-1].type = UNIFIEDCACHE;
-                    } 
+                    }
                     else if (strcmp(type, "DATACACHE") == 0)
                     {
                         cpuid_topology.cacheLevels[level-1].type = DATACACHE;
-                    } 
+                    }
                     else if (strcmp(type, "INSTRUCTIONCACHE") == 0)
                     {
                         cpuid_topology.cacheLevels[level-1].type = INSTRUCTIONCACHE;
-                    } 
+                    }
                     else if (strcmp(type, "ITLB") == 0)
                     {
                         cpuid_topology.cacheLevels[level-1].type = ITLB;
-                    } 
+                    }
                     else if (strcmp(type, "DTLB") == 0)
                     {
                         cpuid_topology.cacheLevels[level-1].type = DTLB;
@@ -368,7 +373,7 @@ static int readTopologyFile(const char* filename)
                         cpuid_topology.cacheLevels[level-1].inclusive = tmp;
                     }
                 }
-                
+
             }
         }
         else if (strcmp(structure, "cpuid_info") == 0)
@@ -377,7 +382,7 @@ static int readTopologyFile(const char* filename)
             {
                 sscanf(line, "%s %s = %d", structure, field, &tmp);
                 cpuid_info.family = tmp;
-                
+
             }
             else if (strcmp(field, "model") == 0)
             {
@@ -395,55 +400,55 @@ static int readTopologyFile(const char* filename)
             {
                 sscanf(line, "%s %s = %d", structure, field, &tmp);
                 cpuid_info.stepping = tmp;
-                
+
             }
             else if (strcmp(field, "clock") == 0)
             {
                 sscanf(line, "%s %s = %d", structure, field, &tmp);
                 cpuid_info.clock = tmp;
-                
+
             }
             else if (strcmp(field, "turbo") == 0)
             {
                 sscanf(line, "%s %s = %d", structure, field, &tmp);
                 cpuid_info.turbo = tmp;
-                
+
             }
             else if (strcmp(field, "isIntel") == 0)
             {
                 sscanf(line, "%s %s = %d", structure, field, &tmp);
                 cpuid_info.isIntel = tmp;
-                
+
             }
             else if (strcmp(field, "featureFlags") == 0)
             {
                 sscanf(line, "%s %s = %d", structure, field, &tmp);
                 cpuid_info.featureFlags = tmp;
-                
+
             }
             else if (strcmp(field, "perf_version") == 0)
             {
                 sscanf(line, "%s %s = %d", structure, field, &tmp);
                 cpuid_info.perf_version = tmp;
-                
+
             }
             else if (strcmp(field, "perf_num_ctr") == 0)
             {
                 sscanf(line, "%s %s = %d", structure, field, &tmp);
                 cpuid_info.perf_num_ctr = tmp;
-                
+
             }
             else if (strcmp(field, "perf_width_ctr") == 0)
             {
                 sscanf(line, "%s %s = %d", structure, field, &tmp);
                 cpuid_info.perf_width_ctr = tmp;
-                
+
             }
             else if (strcmp(field, "perf_num_fixed_ctr") == 0)
             {
                 sscanf(line, "%s %s = %d", structure, field, &tmp);
                 cpuid_info.perf_num_fixed_ctr = tmp;
-                
+
             }
             else if (strcmp(field, "features") == 0)
             {
@@ -459,7 +464,7 @@ static int readTopologyFile(const char* filename)
             {
                 int id;
                 sscanf(line, "%s %s %d %s", structure, field, &id, value);
-                    
+
                 if (strcmp(value,"numberOfProcessors") == 0)
                 {
                     sscanf(line, "%s %s %d %s = %d", structure, field, &id, value, &tmp);
@@ -592,11 +597,22 @@ int topology_setName(void)
                     break;
                 case BROADWELL_D:
                     cpuid_info.name = broadwell_d_str;
-                    cpuid_info.short_name = short_broadwell;
+                    cpuid_info.short_name = short_broadwell_d;
                     break;
                 case BROADWELL_E:
                     cpuid_info.name = broadwell_ep_str;
                     cpuid_info.short_name = short_broadwell_ep;
+                    break;
+
+                case SKYLAKE1:
+                case SKYLAKE2:
+                    cpuid_info.name = skylake_str;
+                    cpuid_info.short_name = short_skylake;
+                    break;
+
+                case XEON_PHI2:
+                    cpuid_info.name = xeon_phi2_string;
+                    cpuid_info.short_name = short_phi2;
                     break;
 
                 case NEHALEM_EX:
@@ -652,7 +668,7 @@ int topology_setName(void)
             break;
 
         case MIC_FAMILY:
-            switch ( cpuid_info.model ) 
+            switch ( cpuid_info.model )
             {
                 case XEON_PHI:
                     cpuid_info.name = xeon_phi_string;
@@ -747,7 +763,7 @@ int topology_setName(void)
             cpuid_info.name = kabini_str;
             cpuid_info.short_name = short_k16;
             break;
-            
+
         default:
             return EXIT_FAILURE;
             break;
@@ -776,7 +792,7 @@ void topology_setupTree(void)
     uint32_t i;
     TreeNode* currentNode;
     HWThread* hwThreadPool = cpuid_topology.threadPool;
-    
+
     tree_init(&cpuid_topology.topologyTree, 0);
     for (i=0; i<  cpuid_topology.numHWThreads; i++)
     {
@@ -816,13 +832,16 @@ int topology_init(void)
 {
     struct topology_functions funcs = topology_funcs;
 
-    if (init)
+    if (topology_initialized)
     {
         return EXIT_SUCCESS;
     }
-    init = 1;
 
-    init_configuration();
+    if (init_configuration())
+    {
+        ERROR_PLAIN_PRINT(Cannot initialize configuration module to check for topology file name);
+        return EXIT_FAILURE;
+    }
 
     if ((config.topologyCfgFileName == NULL) || access(config.topologyCfgFileName, R_OK))
     {
@@ -873,12 +892,17 @@ int topology_init(void)
     }
 
 
+    topology_initialized = 1;
     return EXIT_SUCCESS;
 }
 
 
 void topology_finalize(void)
 {
+    if (!topology_initialized)
+    {
+        return;
+    }
     if (cpuid_info.features != NULL)
     {
         free(cpuid_info.features);
@@ -904,6 +928,29 @@ void topology_finalize(void)
         tree_destroy(cpuid_topology.topologyTree);
         cpuid_topology.topologyTree = NULL;
     }
+    cpuid_info.family = 0;
+    cpuid_info.model = 0;
+    cpuid_info.stepping = 0;
+    cpuid_info.clock = 0;
+    cpuid_info.turbo = 0;
+    cpuid_info.name = NULL;
+    cpuid_info.short_name = NULL;
+    cpuid_info.isIntel = 0;
+    cpuid_info.supportUncore = 0;
+    cpuid_info.featureFlags = 0;
+    cpuid_info.perf_version = 0;
+    cpuid_info.perf_num_ctr = 0;
+    cpuid_info.perf_width_ctr = 0;
+    cpuid_info.perf_num_fixed_ctr = 0;
+
+    cpuid_topology.numHWThreads = 0;
+    cpuid_topology.activeHWThreads = 0;
+    cpuid_topology.numSockets = 0;
+    cpuid_topology.numCoresPerSocket = 0;
+    cpuid_topology.numThreadsPerCore = 0;
+    cpuid_topology.numCacheLevels = 0;
+
+    topology_initialized = 0;
 }
 
 
@@ -933,8 +980,11 @@ void print_supportedCPUs (void)
     printf("\t%s\n",atom_silvermont_str);
     printf("\t%s\n",atom_airmont_str);
     printf("\t%s\n",xeon_phi_string);
-    printf("\t%s\n\n",broadwell_str);
-
+    printf("\t%s\n",broadwell_str);
+    printf("\t%s\n",broadwell_d_str);
+    printf("\t%s\n",broadwell_ep_str);
+    printf("\t%s\n",skylake_str);
+    printf("\n");
     printf("Supported AMD processors:\n");
     printf("\t%s\n",opteron_sc_str);
     printf("\t%s\n",opteron_dc_e_str);
@@ -944,7 +994,8 @@ void print_supportedCPUs (void)
     printf("\t%s\n",istanbul_str);
     printf("\t%s\n",magnycours_str);
     printf("\t%s\n",interlagos_str);
-    printf("\t%s\n\n",kabini_str);
+    printf("\t%s\n",kabini_str);
+    printf("\n");
 }
 
 

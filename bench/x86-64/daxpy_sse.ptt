@@ -1,0 +1,24 @@
+STREAMS 2
+TYPE DOUBLE
+FLOPS 2
+BYTES 24
+DESC Double-precision linear combination of two vectors, optimized for SSE
+LOADS 2
+STORES 1
+INSTR_CONST 17
+INSTR_LOOP 6
+UOPS 26
+movaps FPR7, [rip+SCALAR]
+LOOP 8
+vmulpd    FPR1, FPR7, [STR0 + GPR1*8]
+vaddpd    FPR1, FPR1, [STR1 + GPR1*8]
+movaps    [STR1 + GPR1*8], FPR1
+vmulpd    FPR2, FPR7, [STR0 + GPR1*8+16]
+vaddpd    FPR2, FPR2, [STR1 + GPR1*8+16]
+movaps    [STR1 + GPR1*8+16], FPR2
+vmulpd    FPR3, FPR7, [STR0 + GPR1*8+32]
+vaddpd    FPR3, FPR3, [STR1 + GPR1*8+32]
+movaps    [STR1 + GPR1*8+32], FPR3
+vmulpd    FPR4, FPR7, [STR0 + GPR1*8+48]
+vaddpd    FPR4, FPR4, [STR1 + GPR1*8+48]
+movaps    [STR1 + GPR1*8+48], FPR4

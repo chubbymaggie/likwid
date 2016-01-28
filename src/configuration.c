@@ -48,6 +48,13 @@ static int default_configuration(void)
     char *fptr;
     size_t len = 0;
     filename[0] = '\0';
+    if (ACCESSMODE == 0)
+    {
+        config.daemonMode = ACCESSMODE_DIRECT;
+        init_config = 1;
+        return 0;
+    }
+    config.daemonMode = ACCESSMODE_DAEMON;
     FILE* fp = popen("which likwid-accessD 2>/dev/null | tr -d '\n'","r");
     if (fp == NULL)
     {
@@ -59,11 +66,11 @@ static int default_configuration(void)
         fclose(fp);
         goto use_hardcoded;
     }
-    fclose(fp);
     config.daemonPath = (char*)malloc((len+1) * sizeof(char));
     strncpy(config.daemonPath, fptr, len);
     config.daemonPath[len] = '\0';
     init_config = 1;
+    fclose(fp);
     return 0;
 use_hardcoded:
     ret = sprintf(filename,"%s", TOSTRING(ACCESSDAEMON));
@@ -76,7 +83,7 @@ use_hardcoded:
     }
     else
     {
-        ERROR_PLAIN_PRINT(Unable to get path to access daemon);
+        ERROR_PLAIN_PRINT(Unable to get path to access daemon. Maybe your PATH environment variable does not contain the folder where you installed it or the file was moved away / not copied to that location?);
         exit(EXIT_FAILURE);
     }
     return 0;
@@ -183,7 +190,7 @@ int init_configuration(void)
         }
         else if (strcmp(name, "daemon_mode") == 0)
         {
-            if (strcmp(value, "daemon") == 0) 
+            if (strcmp(value, "daemon") == 0)
             {
                 config.daemonMode = ACCESSMODE_DAEMON;
             }
@@ -201,7 +208,7 @@ int init_configuration(void)
             config.maxNumNodes = atoi(value);
         }
     }
-    
+
 
     init_config = 1;
 
@@ -220,7 +227,7 @@ Configuration_t get_configuration(void)
 
 int destroy_configuration(void)
 {
-    if (init_config == 0) 
+    if (init_config == 0)
     {
         return -EFAULT;
     }

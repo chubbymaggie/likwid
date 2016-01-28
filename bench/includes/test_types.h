@@ -89,6 +89,13 @@ typedef struct {
     FuncPrototype kernel;
     int  flops;
     int  bytes;
+    char* desc;
+    int loads;
+    int stores;
+    int branches;
+    int instr_const;
+    int instr_loop;
+    int uops;
 } TestCase;
 
 typedef struct {

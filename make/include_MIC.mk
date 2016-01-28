@@ -15,10 +15,11 @@ ANSI_CFLAGS += -pedantic
 CFLAGS   = -mmic -O1 -g -Wno-format -fPIC
 FCFLAGS  = -J ./  -fsyntax-only
 #FCFLAGS  = -module ./ 
-ASFLAGS  =  -mmic -c
+ASFLAGS  =  -mmic -c -x assembler
 PASFLAGS  = x86-64
 CPPFLAGS =
 LFLAGS   =  -pthread -g -mmic
+RPATHS += -Wl,-rpath=$(HOME)/miclibs
 
 SHARED_CFLAGS = -fpic -mmic -fvisibility=hidden
 SHARED_LFLAGS = -shared -mmic -fvisibility=hidden

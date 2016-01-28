@@ -56,29 +56,93 @@ function usage()
     print("-m\t List available governors")
 end
 
+function getCurrentMinFreq(cpuid)
+    local min = 10000000
+    if cpuid == nil or cpuid < 0 then
+        for cpuid=0,topo["numHWThreads"]-1 do
+            fp = io.open(sys_base_path .. "/" .. string.format("cpu%d",cpuid) .. "/cpufreq/scaling_min_freq")
+            if verbosity == 3 then
+                print("Reading "..sys_base_path .. "/" .. string.format("cpu%d",cpuid) .. "/cpufreq/scaling_min_freq" )
+            end
+            line = fp:read("*l")
+            if tonumber(line)/1E6 < min then
+                min = tonumber(line)/1E6
+            end
+            fp:close()
+        end
+    else
+        fp = io.open(sys_base_path .. "/" .. string.format("cpu%d",cpuid) .. "/cpufreq/scaling_min_freq")
+        if verbosity == 3 then
+            print("Reading "..sys_base_path .. "/" .. string.format("cpu%d",cpuid) .. "/cpufreq/scaling_min_freq" )
+        end
+        line = fp:read("*l")
+        if tonumber(line)/1E6 < min then
+            min = tonumber(line)/1E6
+        end
+        fp:close()
+    end
+    return min
+end
+
+function getCurrentMaxFreq(cpuid)
+    local max = 0
+    if cpuid == nil or cpuid < 0 then
+        for cpuid=0,topo["numHWThreads"]-1 do
+            fp = io.open(sys_base_path .. "/" .. string.format("cpu%d",cpuid) .. "/cpufreq/scaling_max_freq")
+            if verbosity == 3 then
+                print("Reading "..sys_base_path .. "/" .. string.format("cpu%d",cpuid) .. "/cpufreq/scaling_max_freq" )
+            end
+            line = fp:read("*l")
+            if tonumber(line)/1E6 > max then
+                max = tonumber(line)/1E6
+            end
+            fp:close()
+        end
+    else
+        fp = io.open(sys_base_path .. "/" .. string.format("cpu%d",cpuid) .. "/cpufreq/scaling_max_freq")
+        if verbosity == 3 then
+            print("Reading "..sys_base_path .. "/" .. string.format("cpu%d",cpuid) .. "/cpufreq/scaling_max_freq" )
+        end
+        line = fp:read("*l")
+        if tonumber(line)/1E6 > max then
+            max = tonumber(line)/1E6
+        end
+        fp:close()
+    end
+    return max
+end
+
+
 function getAvailFreq(cpuid)
-    if (cpuid == nil) or (cpuid < 1) then
+    if cpuid == nil then
         cpuid = 0
     end
-    local fp = io.open(sys_base_path .. "/" .. string.format("cpu%d",cpuid) .. "/cpufreq/scaling_available_frequencies")
+    if cpuid < 0 then
+        cpuid = 0
+    end
+    fp = io.open(sys_base_path .. "/" .. string.format("cpu%d",cpuid) .. "/cpufreq/scaling_available_frequencies")
     if verbosity == 3 then
         print("Reading "..sys_base_path .. "/" .. string.format("cpu%d",cpuid) .. "/cpufreq/scaling_available_frequencies" )
     end
-    local line = fp:read("*l")
+    line = fp:read("*l")
     fp:close()
+    
     local tmp = likwid.stringsplit(line:gsub("^%s*(.-)%s*$", "%1"), " ", nil, " ")
     local avail = {}
-    local turbo = tostring(tonumber(tmp[1])/1E6)
+    local turbo = tonumber(tmp[1])/1E6
+    local j = 1
     for i=2,#tmp do
-        avail[i-1] = tostring(tonumber(tmp[i])/1E6)
-        if not avail[i-1]:match("%d.%d") then
-            avail[i-1] = avail[i-1] ..".0"
+        local freq = tonumber(tmp[i])/1E6
+        avail[j] = tostring(freq)
+        if not avail[j]:match("%d+.%d+") then
+            avail[j] = avail[j] ..".0"
         end
+        j = j + 1
     end
     if verbosity == 1 then
         print(string.format("The system provides %d scaling frequencies, frequency %s is taken as turbo mode", #avail,turbo))
     end
-    return avail, turbo
+    return avail, tostring(turbo)
 end
 
 function getCurFreq()
@@ -179,6 +243,9 @@ for opt,arg in likwid.getopt(arg, {"g:", "c:", "f:", "l", "p", "h", "v", "m", "h
     elseif opt == "?" then
         print("Invalid commandline option -"..arg)
         os.exit(1)
+    elseif opt == "!" then
+        print("Option requires an argument")
+        os.exit(1)
     end
 end
 if not testDriver() then
@@ -188,10 +255,10 @@ end
 
 topo = likwid.getCpuTopology()
 affinity = likwid.getAffinityInfo()
-if not domain then
+if not domain or domain == "N" then
     domain = "N:0-" .. tostring(topo["numHWThreads"]-1)
 end
-if domain:match("[SCM]%d+") then
+if domain:match("[SCM]%d") then
     for i, dom in pairs(affinity["domains"]) do
         if dom["tag"]:match(domain) then
             domain = domain..":0-"..tostring(dom["numberOfProcessors"]-1)
@@ -217,9 +284,18 @@ if printAvailGovs then
 end
 
 if printAvailFreq then
-    local freqs, turbo = getAvailFreq(nil)
     print("Available frequencies:")
-    print(turbo .. ", " .. table.concat(freqs, ", "))
+    local out = {}
+    local i = 1;
+    local freqs, turbo = getAvailFreq(nil)
+    if turbo ~= "0" then
+        table.insert(out, turbo)
+    end
+    for i=1,#freqs do
+        table.insert(out, freqs[i])
+    end
+
+    print(table.concat(out, " "))
 end
 
 if printCurFreq then
@@ -236,23 +312,29 @@ if printAvailGovs or printAvailFreq or printCurFreq then
     os.exit(0)
 end
 
+if numthreads > 0 and not (frequency or governor) then
+    print("You need to set either a frequency or governor for the selected CPUs on commandline")
+    os.exit(1)
+end
+
 if frequency then
-    local freqs, turbo = getAvailFreq(nil)
-    local valid_freq = false
-    for k,v in pairs(freqs) do
-        if (frequency == v) then
-            valid_freq = true
-            break
-        end
-    end
-    if frequency == turbo then
-        valid_freq = true
-    end
-    if not valid_freq then
-        print(string.format("Frequency %s not available! Please select one of\n%s", frequency, table.concat(freqs, ", ")))
-        os.exit(1)
-    end
     for i=1,#cpulist do
+        local freqs, turbo = getAvailFreq(cpulist[i])
+        local valid_freq = false
+        for k,v in pairs(freqs) do
+            if (frequency == v) then
+                valid_freq = true
+                break
+            end
+        end
+        if frequency == turbo then
+            valid_freq = true
+        end
+        if not valid_freq then
+            print(string.format("Frequency %s not available for CPU %d! Please select one of\n%s", frequency, cpulist[i], table.concat(freqs, ", ")))
+            os.exit(1)
+        end
+    
         local cmd = set_command .. " " .. tostring(cpulist[i]) .. " " .. tostring(tonumber(frequency)*1E6)
         if governor then
             cmd = cmd .. " " .. governor
@@ -281,7 +363,7 @@ if governor then
             break
         end
     end
-    if (governor == "turbo") then
+    if governor == "turbo" and turbo ~= "0" then
         valid_gov = true
         for i=1,#cpulist do
             cur_freqs[cpulist[i]] = turbo

@@ -34,17 +34,16 @@
 
 #include <likwid.h>
 
-#define EVENTSET "INSTR_RETIRED_ANY:FIXC0"
-
 
 int main(int argc, char* argv[])
 {
-    int i;
+    int i, j;
     int err;
     int* cpus;
     int gid;
     double result = 0.0;
-
+    char estr[] = "L2_LINES_IN_ALL:PMC0,L2_TRANS_L2_WB:PMC1";
+    //perfmon_setVerbosity(3);
     // Load the topology module and print some values.
     err = topology_init();
     if (err < 0)
@@ -56,6 +55,9 @@ int main(int argc, char* argv[])
     CpuInfo_t info = get_cpuInfo();
     // CpuTopology_t contains information about the topology of the CPUs.
     CpuTopology_t topo = get_cpuTopology();
+    // Create affinity domains. Commonly only needed when reading Uncore counters
+    affinity_init();
+
     printf("Likwid example on a %s with %d CPUs\n", info->name, topo->numHWThreads);
 
     cpus = (int*)malloc(topo->numHWThreads * sizeof(int));
@@ -82,10 +84,10 @@ int main(int argc, char* argv[])
     }
 
     // Add eventset string to the perfmon module.
-    gid = perfmon_addEventSet(EVENTSET);
+    gid = perfmon_addEventSet(estr);
     if (gid < 0)
     {
-        printf("Failed to add event string %s to LIKWID's performance monitoring module\n", EVENTSET);
+        printf("Failed to add event string %s to LIKWID's performance monitoring module\n", estr);
         perfmon_finalize();
         topology_finalize();
         return 1;
@@ -110,7 +112,7 @@ int main(int argc, char* argv[])
         return 1;
     }
     // Perform something
-    sleep(2);
+    sleep(10);
     // Stop all counters in the previously started event set.
     err = perfmon_stopCounters();
     if (err < 0)
@@ -122,15 +124,25 @@ int main(int argc, char* argv[])
     }
 
 
-    // Print the result of every thread/CPU.
-    for (i = 0;i < topo->numHWThreads; i++)
+    // Print the result of every thread/CPU for all events in estr.
+    char* ptr = strtok(estr,",");
+    j = 0;
+    while (ptr != NULL)
     {
-        result = perfmon_getResult(gid, 0, i);
-        printf("Measurement result for event set %s at CPU %d: %f\n", EVENTSET, cpus[i], result);
+        for (i = 0;i < topo->numHWThreads; i++)
+        {
+            result = perfmon_getResult(gid, j, i);
+            printf("Measurement result for event set %s at CPU %d: %f\n", ptr, cpus[i], result);
+        }
+        ptr = strtok(NULL,",");
+        j++;
     }
 
+
+    free(cpus);
     // Uninitialize the perfmon module.
     perfmon_finalize();
+    affinity_finalize();
     // Uninitialize the topology module.
     topology_finalize();
     return 0;

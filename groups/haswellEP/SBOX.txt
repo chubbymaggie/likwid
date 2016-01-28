@@ -22,7 +22,7 @@ Formula:
 Ring transfer bandwidth [MByte/s] = 1.E-06*(SUM(SBOXxC0)*32)/time
 Ring transfer data volume [GByte] = 1.E-09*(SUM(SBOXxC0)*32)
 --
-The SBOXes manage the transfer between the socket local ring(s). For microarchitectures
+The SBOXes manage the transfer between the socket local ring(s). For micro architectures
 prior to Haswell, the SBOX and QBOX was similar as only a single ring was used.
 Haswell systems with a high core count assemble two rings that are connected through
 the SBOXes, the traffic between the sockets is handled by the QBOXes.

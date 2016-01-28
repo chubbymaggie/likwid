@@ -168,11 +168,14 @@ LIKWID_MARKER_THREADINIT;
  * the region tag previously to reduce the overhead
  * of START and STOP calls. Call it once for each
  * thread in parallel environment.
+ * Note: No whitespace characters are allowed in the region tags
  * This call is optional, START will do the same operations.
  */
 LIKWID_MARKER_REGISTER("name");
 
-/* Start measurement */
+/* Start measurement 
+ * Note: No whitespace characters are allowed in the region tags
+ */
 LIKWID_MARKER_START("name");
 /*
  * Your code to be measured is here
@@ -230,6 +233,6 @@ For more code examples have a look at the likwid WIKI pages and LIKWID's html do
 .SH AUTHOR
 Written by Thomas Roehl <thomas.roehl@googlemail.com>.
 .SH BUGS
-Report Bugs on <https://github.com/rrze-likwid/likwid/issues>.
+Report Bugs on <https://github.com/RRZE-HPC/likwid/issues>.
 .SH SEE ALSO
 likwid-topology(1), likwid-perfscope(1), likwid-pin(1), likwid-bench(1)

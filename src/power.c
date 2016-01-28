@@ -55,10 +55,15 @@ power_init(int cpuId)
 
     /* determine Turbo Mode features */
     double busSpeed;
+    if (power_initialized)
+    {
+        return 0;
+    }
 
     power_info.baseFrequency = 0;
     power_info.minFrequency = 0;
     power_info.turbo.numSteps = 0;
+    power_info.turbo.steps = NULL;
     power_info.powerUnit = 0;
     power_info.timeUnit = 0;
     power_info.hasRAPL = 0;
@@ -80,6 +85,8 @@ power_init(int cpuId)
         case BROADWELL_D:
         case HASWELL_M1:
         case HASWELL_M2:
+        case SKYLAKE1:
+        case SKYLAKE2:
             power_info.hasRAPL = 1;
             break;
         case ATOM_SILVERMONT_C:
@@ -97,11 +104,8 @@ power_init(int cpuId)
     perfmon_init_maps();
     if (!HPMinitialized())
     {
+        HPMinit();
         HPMaddThread(cpuId);
-    }
-    if (power_initialized)
-    {
-        return 0;
     }
     if ( power_info.hasRAPL )
     {
@@ -481,10 +485,22 @@ int power_policyGet(int cpuId, PowerType domain, uint32_t* priority)
 
 void power_finalize(void)
 {
-    if (power_info.turbo.steps)
+    if (power_initialized == 0)
+    {
+        return;
+    }
+    if (power_info.turbo.steps != NULL)
     {
         free(power_info.turbo.steps);
     }
+    power_info.turbo.steps = NULL;
+    power_info.baseFrequency = 0;
+    power_info.minFrequency = 0;
+    power_info.turbo.numSteps = 0;
+    power_info.powerUnit = 0;
+    power_info.timeUnit = 0;
+    power_info.hasRAPL = 0;
+    memset(power_info.domains, 0, NUM_POWER_DOMAINS*sizeof(PowerDomain));
 }
 
 PowerInfo_t get_powerInfo(void)

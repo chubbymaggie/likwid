@@ -36,7 +36,7 @@
 #include <sys/types.h>
 #include <sys/time.h>
 #include <time.h>
-
+#include <sched.h>
 
 #include <lua.h>                               /* Always include this */
 #include <lauxlib.h>                           /* Always include this */
@@ -44,6 +44,7 @@
 
 #include <likwid.h>
 #include <tree.h>
+#include <access.h>
 
 #ifdef COLOR
 #include <textcolor.h>
@@ -143,7 +144,7 @@ static int lua_likwid_setAccessMode(lua_State* L)
     int flag;
     flag = luaL_checknumber(L,1);
     luaL_argcheck(L, flag >= 0 && flag <= 1, 1, "invalid access mode, only 0 (direct) and 1 (accessdaemon) allowed");
-    accessClient_setaccessmode(flag);
+    HPMmode(flag);
     lua_pushnumber(L,0);
     return 1;
 }
@@ -297,18 +298,10 @@ static int lua_likwid_switchGroup(lua_State* L)
 
 static int lua_likwid_finalize(lua_State* L)
 {
-    if (topology_isInitialized == 1)
+    if (perfmon_isInitialized == 1)
     {
-        topology_finalize();
-        topology_isInitialized = 0;
-        cputopo = NULL;
-        cpuinfo = NULL;
-    }
-    if (numa_isInitialized == 1)
-    {
-        numa_finalize();
-        numa_isInitialized = 0;
-        numainfo = NULL;
+        perfmon_finalize();
+        perfmon_isInitialized = 0;
     }
     if (affinity_isInitialized == 1)
     {
@@ -316,10 +309,18 @@ static int lua_likwid_finalize(lua_State* L)
         affinity_isInitialized = 0;
         affinity = NULL;
     }
-    if (perfmon_isInitialized == 1)
+    if (numa_isInitialized == 1)
     {
-        perfmon_finalize();
-        perfmon_isInitialized = 0;
+        numa_finalize();
+        numa_isInitialized = 0;
+        numainfo = NULL;
+    }
+    if (topology_isInitialized == 1)
+    {
+        topology_finalize();
+        topology_isInitialized = 0;
+        cputopo = NULL;
+        cpuinfo = NULL;
     }
     if (config_isInitialized == 1)
     {
@@ -1043,6 +1044,90 @@ static int lua_likwid_getAffinityInfo(lua_State* L)
     return 1;
 }
 
+static int lua_likwid_cpustr_to_cpulist(lua_State* L)
+{
+    int ret = 0;
+    char* cpustr = (char *)luaL_checkstring(L, 1);
+    int* cpulist = (int*) malloc(MAX_NUM_THREADS * sizeof(int));
+    if (cpulist == NULL)
+    {
+        lua_pushstring(L,"Cannot allocate data for the CPU list");
+        lua_error(L);
+    }
+    ret = cpustr_to_cpulist(cpustr, cpulist, MAX_NUM_THREADS);
+    if (ret <= 0)
+    {
+        lua_pushstring(L,"Cannot parse cpustring");
+        lua_error(L);
+    }
+    lua_pushnumber(L, ret);
+    lua_newtable(L);
+    for (int i=0;i<ret;i++)
+    {
+        lua_pushunsigned(L, i+1);
+        lua_pushunsigned(L, cpulist[i]);
+        lua_settable(L,-3);
+    }
+    free(cpulist);
+    return 2;
+}
+
+static int lua_likwid_nodestr_to_nodelist(lua_State* L)
+{
+    int ret = 0;
+    char* nodestr = (char *)luaL_checkstring(L, 1);
+    int* nodelist = (int*) malloc(MAX_NUM_NODES * sizeof(int));
+    if (nodelist == NULL)
+    {
+        lua_pushstring(L,"Cannot allocate data for the node list");
+        lua_error(L);
+    }
+    ret = nodestr_to_nodelist(nodestr, nodelist, MAX_NUM_NODES);
+    if (ret <= 0)
+    {
+        lua_pushstring(L,"Cannot parse node string");
+        lua_error(L);
+    }
+    lua_pushnumber(L, ret);
+    lua_newtable(L);
+    for (int i=0;i<ret;i++)
+    {
+        lua_pushunsigned(L, i+1);
+        lua_pushunsigned(L, nodelist[i]);
+        lua_settable(L,-3);
+    }
+    free(nodelist);
+    return 2;
+}
+
+static int lua_likwid_sockstr_to_socklist(lua_State* L)
+{
+    int ret = 0;
+    char* sockstr = (char *)luaL_checkstring(L, 1);
+    int* socklist = (int*) malloc(MAX_NUM_NODES * sizeof(int));
+    if (socklist == NULL)
+    {
+        lua_pushstring(L,"Cannot allocate data for the socket list");
+        lua_error(L);
+    }
+    ret = nodestr_to_nodelist(sockstr, socklist, MAX_NUM_NODES);
+    if (ret <= 0)
+    {
+        lua_pushstring(L,"Cannot parse socket string");
+        lua_error(L);
+    }
+    lua_pushnumber(L, ret);
+    lua_newtable(L);
+    for (int i=0;i<ret;i++)
+    {
+        lua_pushunsigned(L, i+1);
+        lua_pushunsigned(L, socklist[i]);
+        lua_settable(L,-3);
+    }
+    free(socklist);
+    return 2;
+}
+
 static int lua_likwid_putAffinityInfo(lua_State* L)
 {
     if (affinity_isInitialized)
@@ -1442,16 +1527,26 @@ static int lua_likwid_startProgram(lua_State* L)
     char  *argv[4096];
     exec = (char *)luaL_checkstring(L, 1);
     int nrThreads = luaL_checknumber(L,2);
-    int cpus[nrThreads];
-    if (!lua_istable(L, -1)) {
-      lua_pushstring(L,"No table given as second argument");
-      lua_error(L);
-    }
-    for (status = 1; status<=nrThreads; status++)
+    int cpus[MAX_NUM_THREADS];
+    cpu_set_t cpuset;
+    if (nrThreads > 0)
     {
-        lua_rawgeti(L,-1,status);
-        cpus[status-1] = lua_tounsigned(L,-1);
-        lua_pop(L,1);
+        if (!lua_istable(L, -1)) {
+          lua_pushstring(L,"No table given as second argument");
+          lua_error(L);
+        }
+        for (status = 1; status<=nrThreads; status++)
+        {
+            lua_rawgeti(L,-1,status);
+            cpus[status-1] = lua_tounsigned(L,-1);
+            lua_pop(L,1);
+        }
+    }
+    else
+    {
+        for (nrThreads = 0; nrThreads < cpuid_topology.numHWThreads; nrThreads++)
+            cpus[nrThreads] = cpuid_topology.threadPool[nrThreads].apicId;
+        nrThreads = cpuid_topology.numHWThreads;
     }
     parse(exec, argv);
     ppid = getpid();
@@ -1607,6 +1702,138 @@ static int lua_likwid_access(lua_State* L)
     return 1;
 }
 
+static int lua_likwid_markerInit(lua_State* L)
+{
+    likwid_markerInit();
+    return 0;
+}
+
+static int lua_likwid_markerThreadInit(lua_State* L)
+{
+    likwid_markerThreadInit();
+    return 0;
+}
+
+static int lua_likwid_markerClose(lua_State* L)
+{
+    likwid_markerClose();
+    return 0;
+}
+
+static int lua_likwid_markerNext(lua_State* L)
+{
+    likwid_markerNextGroup();
+    return 0;
+}
+
+static int lua_likwid_registerRegion(lua_State* L)
+{
+    const char* tag = (const char*)luaL_checkstring(L, -1);
+    lua_pushinteger(L, likwid_markerRegisterRegion(tag));
+    return 1;
+}
+
+static int lua_likwid_startRegion(lua_State* L)
+{
+    const char* tag = (const char*)luaL_checkstring(L, -1);
+    lua_pushinteger(L, likwid_markerStartRegion(tag));
+    return 1;
+}
+
+static int lua_likwid_stopRegion(lua_State* L)
+{
+    const char* tag = (const char*)luaL_checkstring(L, -1);
+    lua_pushinteger(L, likwid_markerStopRegion(tag));
+    return 1;
+}
+
+static int lua_likwid_getRegion(lua_State* L)
+{
+    int i = 0;
+    const char* tag = (const char*)luaL_checkstring(L, -2);
+    int nr_events = perfmon_getNumberOfEvents(perfmon_getIdOfActiveGroup());
+    double* events = NULL;
+    double time = 0.0;
+    int count = 0;
+    
+    events = (double*) malloc(nr_events * sizeof(double));
+    if (events == NULL)
+    {
+        lua_pushstring(L,"Cannot allocate memory for event data\n");
+        lua_error(L);
+    }
+    for (i = 0; i < nr_events; i++)
+    {
+        events[i] = 0.0;
+    }
+    likwid_markerGetRegion(tag, &nr_events, events, &time, &count);
+    
+    lua_pushinteger(L, nr_events);
+    lua_newtable(L);
+    for (i=0;i<nr_events;i++)
+    {
+        lua_pushinteger(L, i+1);
+        lua_pushnumber(L, events[i]);
+        lua_settable(L, -3);
+    }
+    lua_pushnumber(L, time);
+    lua_pushinteger(L, count);
+    free(events);
+    return 4;
+}
+
+static int lua_likwid_cpuFeatures_init(lua_State* L)
+{
+    cpuFeatures_init();
+    return 0;
+}
+
+static int lua_likwid_cpuFeatures_print(lua_State* L)
+{
+    int cpu = lua_tointeger(L,-1);
+    cpuFeatures_print(cpu);
+    return 0;
+}
+
+static int lua_likwid_cpuFeatures_get(lua_State* L)
+{
+    int cpu = lua_tointeger(L,-2);
+    CpuFeature feature = lua_tointeger(L,-1);
+    lua_pushinteger(L, cpuFeatures_get(cpu, feature));
+    return 1;
+}
+
+static int lua_likwid_cpuFeatures_name(lua_State* L)
+{
+    char* name = NULL;
+    CpuFeature feature = lua_tounsigned(L,-1);
+    name = cpuFeatures_name(feature);
+    if (name != NULL)
+    {
+        lua_pushstring(L, name);
+        return 1;
+    }
+    return 0;
+}
+
+static int lua_likwid_cpuFeatures_enable(lua_State* L)
+{
+    int cpu = lua_tointeger(L,-3);
+    CpuFeature feature = lua_tointeger(L,-2);
+    int verbose = lua_tointeger(L,-1);
+    lua_pushinteger(L, cpuFeatures_enable(cpu, feature, verbose));
+    return 1;
+}
+
+static int lua_likwid_cpuFeatures_disable(lua_State* L)
+{
+    int cpu = lua_tointeger(L,-3);
+    CpuFeature feature = lua_tointeger(L,-2);
+    int verbose = lua_tointeger(L,-1);
+    lua_pushinteger(L, cpuFeatures_disable(cpu, feature, verbose));
+    return 1;
+}
+
 int __attribute__ ((visibility ("default") )) luaopen_liblikwid(lua_State* L){
     // Configuration functions
     lua_register(L, "likwid_getConfiguration", lua_likwid_getConfiguration);
@@ -1643,6 +1870,10 @@ int __attribute__ ((visibility ("default") )) luaopen_liblikwid(lua_State* L){
     lua_register(L, "likwid_putPowerInfo",lua_likwid_putPowerInfo);
     lua_register(L, "likwid_getOnlineDevices", lua_likwid_getOnlineDevices);
     lua_register(L, "likwid_printSupportedCPUs", lua_likwid_printSupportedCPUs);
+    // CPU string parse functions
+    lua_register(L, "likwid_cpustr_to_cpulist",lua_likwid_cpustr_to_cpulist);
+    lua_register(L, "likwid_nodestr_to_nodelist",lua_likwid_nodestr_to_nodelist);
+    lua_register(L, "likwid_sockstr_to_socklist",lua_likwid_sockstr_to_socklist);
     // Timer functions
     lua_register(L, "likwid_getCpuClock",lua_likwid_getCpuClock);
     lua_register(L, "likwid_startClock",lua_likwid_startClock);
@@ -1676,5 +1907,29 @@ int __attribute__ ((visibility ("default") )) luaopen_liblikwid(lua_State* L){
     lua_register(L, "likwid_setVerbosity", lua_likwid_setVerbosity);
     lua_register(L, "likwid_catchSignal", lua_likwid_catch_signal);
     lua_register(L, "likwid_getSignalState", lua_likwid_return_signal_state);
+    // Marker API functions
+    lua_register(L, "likwid_markerInit", lua_likwid_markerInit);
+    lua_register(L, "likwid_markerThreadInit", lua_likwid_markerThreadInit);
+    lua_register(L, "likwid_markerNextGroup", lua_likwid_markerNext);
+    lua_register(L, "likwid_markerClose", lua_likwid_markerClose);
+    lua_register(L, "likwid_registerRegion", lua_likwid_registerRegion);
+    lua_register(L, "likwid_startRegion", lua_likwid_startRegion);
+    lua_register(L, "likwid_stopRegion", lua_likwid_stopRegion);
+    lua_register(L, "likwid_getRegion", lua_likwid_getRegion);
+    // CPU feature manipulation functions
+    lua_register(L, "likwid_cpuFeaturesInit", lua_likwid_cpuFeatures_init);
+    lua_register(L, "likwid_cpuFeaturesGet", lua_likwid_cpuFeatures_get);
+    lua_register(L, "likwid_cpuFeaturesEnable", lua_likwid_cpuFeatures_enable);
+    lua_register(L, "likwid_cpuFeaturesDisable", lua_likwid_cpuFeatures_disable);
+#ifdef __MIC__
+    if (setuid(0) < 0)
+    {
+        printf("Cannot setuid to root\n");
+    }
+    if (seteuid(0) < 0)
+    {
+        printf("Cannot seteuid to root\n");
+    }
+#endif
     return 0;
 }

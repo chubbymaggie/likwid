@@ -38,8 +38,10 @@ typedef struct LikwidThreadResults{
     double time;
     TimerData startTime;
     int groupID;
+    int cpuID;
     uint32_t count;
     double StartPMcounters[NUM_PMC];
+    int StartOverflows[NUM_PMC];
     double PMcounters[NUM_PMC];
 } LikwidThreadResults;
 
@@ -48,6 +50,7 @@ typedef struct {
     int groupID;
     double*  time;
     uint32_t*  count;
+    int* cpulist;
     double** counters;
 } LikwidResults;
 
